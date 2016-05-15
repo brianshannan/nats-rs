@@ -57,10 +57,9 @@ impl NatsCoreConn {
 
         let mut s = "".to_string();
         try!(reader.read_line(&mut s));
-        // if s[..5] != "INFO " {
-        //     println!("{}", s);
-        //     return Err(Error::ParseError);
-        // }
+        if &s[..5] != "INFO " {
+            return Err(Error::ParseError);
+        }
         // TODO handle this better
         let server_info: NatsServerInfo = json::decode(&s[5..]).unwrap();
 
@@ -296,9 +295,9 @@ impl NatsConn {
 
     fn read_loop(core_conn: Arc<Mutex<NatsCoreConn>>, mut reader: BufReader<TcpStream>) {
         let mut parser = Parser::new();
+        // TODO check size
         let mut buf: [u8; 32768] = [0; 32768];
         loop {
-            // TODO
             match reader.read(&mut buf) {
                 Ok(n) => {
                     let mut c = core_conn.lock().unwrap();
@@ -390,46 +389,3 @@ struct NatsServerInfo {
     pub tls_required: bool,
     pub max_payload: u64,
 }
-//
-// struct NatsConnHandler {
-//     core_conn: Arc<Mutex<NatsCoreConn>>,
-//     parser: Parser,
-//     // TODO what size to use?
-//     buf: [u8; 32768],
-// }
-//
-// impl NatsConnHandler {
-//     pub fn new(core_conn: Arc<Mutex<NatsCoreConn>>) -> NatsConnHandler {
-//         NatsConnHandler {
-//             core_conn: core_conn,
-//             parser: Parser::new(),
-//             buf: [0; 32768],
-//         }
-//     }
-// }
-//
-// impl Handler for NatsConnHandler {
-//     type Timeout = ();
-//     type Message = ();
-//
-//     fn ready(&mut self, _event_loop: &mut EventLoop<NatsConnHandler>, _token: Token, events: EventSet) {
-//         // should only be receiving readable events? only one connection
-//         if !events.is_readable() {
-//             return;
-//         }
-//
-//         let mut core_conn = self.core_conn.lock().unwrap();
-//         match core_conn.stream.read(&mut self.buf) {
-//             Ok(n) => {
-//                 // TODO why doesn't this coerce automatically?
-//                 self.parser.parse(core_conn.deref_mut(), &self.buf[..n]).unwrap();
-//             },
-//             Err(_) => (),
-//         };
-//     }
-//
-//     fn notify(&mut self, event_loop: &mut EventLoop<Self>, _message: ()) {
-//         // Getting a message means we should shutdown
-//         event_loop.shutdown();
-//     }
-// }
