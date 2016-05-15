@@ -1,7 +1,5 @@
-extern crate bufstream;
 #[macro_use]
 extern crate log;
-extern crate mio;
 extern crate rand;
 extern crate rustc_serialize;
 

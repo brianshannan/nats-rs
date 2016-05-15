@@ -4,8 +4,6 @@ version = "0.1.0"
 authors = ["Brian Shannan <brianshannan@gmail.com>"]
 
 [dependencies]
-bufstream = "0.1"
 log = "0.3"
-mio = "0.5"
 rand = "*"
 rustc-serialize = "0.3"

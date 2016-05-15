@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::io::BufRead;
+use std::io::BufReader;
+use std::io::BufWriter;
 use std::io::Read;
 use std::io::Write;
 use std::ops::DerefMut;
@@ -11,10 +13,7 @@ use rand::thread_rng;
 use rand::Rng;
 use rand::ThreadRng;
 
-use bufstream::BufStream;
-// use mio::tcp::Shutdown;
-use mio::tcp::TcpStream;
-use mio::{EventLoop, Handler, Token, EventSet, PollOpt, Sender};
+use std::net::TcpStream;
 use rustc_serialize::json;
 
 use Result;
@@ -36,7 +35,7 @@ use subscription::SubscriptionID;
 // TODO need to add reconnects
 // #[derive(Debug)]
 pub struct NatsCoreConn {
-    stream: BufStream<TcpStream>,
+    stream: BufWriter<TcpStream>,
     subscriptions: HashMap<u64, Subscription>,
     server_info: NatsServerInfo,
 }
@@ -52,11 +51,12 @@ pub trait MessageProcessor {
 }
 
 impl NatsCoreConn {
-    pub fn new(config: &Config) -> Result<NatsCoreConn> {
-        let mut stream = BufStream::new(try!(NatsCoreConn::create_tcp_stream(config)));
+    pub fn new(config: &Config) -> Result<(BufReader<TcpStream>, NatsCoreConn)> {
+        let stream = try!(NatsCoreConn::create_tcp_stream(config));
+        let mut reader = BufReader::new(try!(stream.try_clone()));
 
         let mut s = "".to_string();
-        try!(stream.read_line(&mut s));
+        try!(reader.read_line(&mut s));
         // if s[..5] != "INFO " {
         //     println!("{}", s);
         //     return Err(Error::ParseError);
@@ -66,12 +66,12 @@ impl NatsCoreConn {
 
         let mut conn = NatsCoreConn {
             subscriptions: HashMap::new(),
-            stream: stream,
+            stream: BufWriter::new(stream),
             server_info: server_info,
         };
-        try!(conn.connect(config));
+        try!(conn.connect(&mut reader, config));
 
-        Ok(conn)
+        Ok((reader, conn))
     }
 
     fn create_tcp_stream(config: &Config) -> Result<TcpStream> {
@@ -85,7 +85,7 @@ impl NatsCoreConn {
     }
 
     // Protocol is "CONNECT <json options>"
-    fn connect(&mut self, config: &Config) -> Result<()> {
+    fn connect(&mut self, reader: &mut BufReader<TcpStream>, config: &Config) -> Result<()> {
         // TODO need to parse the host
         let conn_info = NatsConnInfo {
             verbose: config.verbose,
@@ -107,7 +107,7 @@ impl NatsCoreConn {
         // TODO fix
         if config.verbose {
             let mut response = "".to_string();
-            try!(self.stream.read_line(&mut response));
+            try!(reader.read_line(&mut response));
             if response != "+OK\r\n" {
                 return Err(Error::ParseError);
             }
@@ -117,15 +117,8 @@ impl NatsCoreConn {
         try!(self.ping());
         try!(self.stream.flush());
 
-        // TODO this is really ugly
-        // the mio tcp stream is non blocking, try to find away to get
-        // around this
-        use std::thread;
-        use std::time::Duration;
-        thread::sleep(Duration::new(1, 0));
-
         let mut s = "".to_string();
-        try!(self.stream.read_line(&mut s));
+        try!(reader.read_line(&mut s));
         if s != "PONG\r\n" {
             return Err(Error::ParseError);
         }
@@ -281,36 +274,45 @@ pub struct NatsConn {
     // config: Config,
     core_conn: Arc<Mutex<NatsCoreConn>>,
     next_sid: u64,
-    loop_shutdown_chan: Sender<()>,
     rng: ThreadRng,
 }
 
 impl NatsConn {
     pub fn new(config: Config) -> Result<NatsConn> {
-        let core_conn = try!(NatsCoreConn::new(&config));
-
-        let mut event_loop = try!(EventLoop::<NatsConnHandler>::new());
-        try!(event_loop.register(core_conn.stream.get_ref(), Token(0), EventSet::readable(), PollOpt::edge()));
-
+        let (reader, core_conn) = try!(NatsCoreConn::new(&config));
         let conn = NatsConn {
             core_conn: Arc::new(Mutex::new(core_conn)),
             next_sid: 0,
-            loop_shutdown_chan: event_loop.channel(),
             rng: thread_rng(),
         };
 
         let core_conn_clone = conn.core_conn.clone();
         thread::spawn(move || {
-            let mut handler = NatsConnHandler::new(core_conn_clone);
-            event_loop.run(&mut handler).unwrap();
+            NatsConn::read_loop(core_conn_clone, reader);
         });
 
         Ok(conn)
     }
 
+    fn read_loop(core_conn: Arc<Mutex<NatsCoreConn>>, mut reader: BufReader<TcpStream>) {
+        let mut parser = Parser::new();
+        let mut buf: [u8; 32768] = [0; 32768];
+        loop {
+            // TODO
+            match reader.read(&mut buf) {
+                Ok(n) => {
+                    let mut c = core_conn.lock().unwrap();
+                    parser.parse(c.deref_mut(), &buf[..n]).unwrap();
+                },
+                Err(_) => {
+                    return;
+                },
+            };
+        }
+    }
+
     pub fn close(&mut self) -> Result<()> {
         try!(self.core_conn.lock().unwrap().close());
-        self.loop_shutdown_chan.send(()).unwrap();
         Ok(())
     }
 
@@ -388,46 +390,46 @@ struct NatsServerInfo {
     pub tls_required: bool,
     pub max_payload: u64,
 }
-
-struct NatsConnHandler {
-    core_conn: Arc<Mutex<NatsCoreConn>>,
-    parser: Parser,
-    // TODO what size to use?
-    buf: [u8; 32768],
-}
-
-impl NatsConnHandler {
-    pub fn new(core_conn: Arc<Mutex<NatsCoreConn>>) -> NatsConnHandler {
-        NatsConnHandler {
-            core_conn: core_conn,
-            parser: Parser::new(),
-            buf: [0; 32768],
-        }
-    }
-}
-
-impl Handler for NatsConnHandler {
-    type Timeout = ();
-    type Message = ();
-
-    fn ready(&mut self, _event_loop: &mut EventLoop<NatsConnHandler>, _token: Token, events: EventSet) {
-        // should only be receiving readable events? only one connection
-        if !events.is_readable() {
-            return;
-        }
-
-        let mut core_conn = self.core_conn.lock().unwrap();
-        match core_conn.stream.read(&mut self.buf) {
-            Ok(n) => {
-                // TODO why doesn't this coerce automatically?
-                self.parser.parse(core_conn.deref_mut(), &self.buf[..n]).unwrap();
-            },
-            Err(_) => (),
-        };
-    }
-
-    fn notify(&mut self, event_loop: &mut EventLoop<Self>, _message: ()) {
-        // Getting a message means we should shutdown
-        event_loop.shutdown();
-    }
-}
+//
+// struct NatsConnHandler {
+//     core_conn: Arc<Mutex<NatsCoreConn>>,
+//     parser: Parser,
+//     // TODO what size to use?
+//     buf: [u8; 32768],
+// }
+//
+// impl NatsConnHandler {
+//     pub fn new(core_conn: Arc<Mutex<NatsCoreConn>>) -> NatsConnHandler {
+//         NatsConnHandler {
+//             core_conn: core_conn,
+//             parser: Parser::new(),
+//             buf: [0; 32768],
+//         }
+//     }
+// }
+//
+// impl Handler for NatsConnHandler {
+//     type Timeout = ();
+//     type Message = ();
+//
+//     fn ready(&mut self, _event_loop: &mut EventLoop<NatsConnHandler>, _token: Token, events: EventSet) {
+//         // should only be receiving readable events? only one connection
+//         if !events.is_readable() {
+//             return;
+//         }
+//
+//         let mut core_conn = self.core_conn.lock().unwrap();
+//         match core_conn.stream.read(&mut self.buf) {
+//             Ok(n) => {
+//                 // TODO why doesn't this coerce automatically?
+//                 self.parser.parse(core_conn.deref_mut(), &self.buf[..n]).unwrap();
+//             },
+//             Err(_) => (),
+//         };
+//     }
+//
+//     fn notify(&mut self, event_loop: &mut EventLoop<Self>, _message: ()) {
+//         // Getting a message means we should shutdown
+//         event_loop.shutdown();
+//     }
+// }
