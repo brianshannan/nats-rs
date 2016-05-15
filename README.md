@@ -33,7 +33,7 @@ conn.publish_message(msg).unwrap();
 ```rust
 conn.unsubscribe(&sub).unwrap();
 
-conn.auto_unsubscribe(&sub).unwrap();
+conn.auto_unsubscribe(&sub, 3).unwrap();
 ```
 
 ### Requests
