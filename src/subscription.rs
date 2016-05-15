@@ -59,7 +59,7 @@ impl DispatchMessage for SendChannelSubscription {
     }
 }
 
-pub fn new_async_subscription<F>(id: u64, callback: F) -> (Subscription, AsyncSubscription) where F: Fn(Message) + Send + 'static{
+pub fn new_async_subscription<F>(id: u64, callback: F) -> (Subscription, AsyncSubscription) where F: Fn(Message) + Send + 'static {
     let send_sub = Subscription {
         id: id,
         delivered: 0,

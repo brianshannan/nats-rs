@@ -53,7 +53,7 @@ pub struct Parser {
     msg_buf: Vec<u8>,
 }
 
-// TODO check
+// TODO check for invalid chars
 fn u64_from_bytes(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0, |x, &i| x * 10 + (i - b'0') as u64)
 }
@@ -384,7 +384,7 @@ mod test {
         }
 
         fn process_err(&mut self, message: &[u8]) {
-            let s = String::from(str::from_utf8(message).unwrap());
+            let s = str::from_utf8(message).unwrap().to_owned();
             self.events.push(ParseEvent::NErr(s));
         }
 
@@ -397,7 +397,7 @@ mod test {
         }
 
         fn process_message(&mut self, args: &MessageArg, message: &[u8]) {
-            let s = String::from(str::from_utf8(message).unwrap());
+            let s = str::from_utf8(message).unwrap().to_owned();
             let a = MessageArg {
                 subject: args.subject.to_vec(),
                 reply: args.reply.as_ref().map(|v| v.to_vec()),

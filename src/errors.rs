@@ -3,6 +3,8 @@ use std::fmt;
 use std::io;
 use std::sync::mpsc;
 
+use rustc_serialize::json;
+
 use message::Message;
 
 #[derive(Debug)]
@@ -12,6 +14,8 @@ pub enum Error {
     MessageTooLarge,
     ChannelSendError(mpsc::SendError<Message>),
     ChannelRecvError(mpsc::RecvError),
+    JsonEncode(json::EncoderError),
+    JsonDecode(json::DecoderError),
     Io(io::Error),
 }
 
@@ -23,6 +27,8 @@ impl fmt::Display for Error {
             Error::MessageTooLarge => write!(f, "message exceeded maximum allowed size from server"),
             Error::ChannelSendError(ref err) => err.fmt(f),
             Error::ChannelRecvError(ref err) => err.fmt(f),
+            Error::JsonEncode(ref err) => err.fmt(f),
+            Error::JsonDecode(ref err) => err.fmt(f),
             Error::Io(ref err) => err.fmt(f),
         }
     }
@@ -36,6 +42,8 @@ impl error::Error for Error {
             Error::MessageTooLarge => "message too large",
             Error::ChannelSendError(ref err) => err.description(),
             Error::ChannelRecvError(ref err) => err.description(),
+            Error::JsonEncode(ref err) => err.description(),
+            Error::JsonDecode(ref err) => err.description(),
             Error::Io(ref err) => err.description(),
         }
     }
@@ -56,5 +64,17 @@ impl From<mpsc::SendError<Message>> for Error {
 impl From<mpsc::RecvError> for Error {
     fn from(err: mpsc::RecvError) -> Error {
         Error::ChannelRecvError(err)
+    }
+}
+
+impl From<json::EncoderError> for Error {
+    fn from(err: json::EncoderError) -> Error {
+        Error::JsonEncode(err)
+    }
+}
+
+impl From<json::DecoderError> for Error {
+    fn from(err: json::DecoderError) -> Error {
+        Error::JsonDecode(err)
     }
 }

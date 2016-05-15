@@ -33,13 +33,6 @@ use subscription::SubscriptionID;
 // TODO TLS
 // TODO Need to figure out flushing
 // TODO need to add reconnects
-// #[derive(Debug)]
-pub struct NatsCoreConn {
-    stream: BufWriter<TcpStream>,
-    subscriptions: HashMap<u64, Subscription>,
-    server_info: NatsServerInfo,
-}
-
 // TODO another trait for message transmission?
 
 pub trait MessageProcessor {
@@ -48,6 +41,45 @@ pub trait MessageProcessor {
     fn process_ping(&mut self);
     fn process_pong(&mut self);
     fn process_message(&mut self, args: &MessageArg, message: &[u8]);
+}
+
+// #[derive(Debug)]
+pub struct NatsConn {
+    // config: Config,
+    core_conn: Arc<Mutex<NatsCoreConn>>,
+    next_sid: u64,
+    rng: ThreadRng,
+}
+
+// #[derive(Debug)]
+pub struct NatsCoreConn {
+    stream: BufWriter<TcpStream>,
+    subscriptions: HashMap<u64, Subscription>,
+    server_info: NatsServerInfo,
+}
+
+#[derive(Debug, RustcDecodable, RustcEncodable)]
+struct NatsConnInfo {
+    pub verbose: bool,
+    pub pedantic: bool,
+    pub user: Option<String>,
+    pub pass: Option<String>,
+    pub auth_token: Option<String>,
+    pub ssl_required: bool,
+    pub name: String,
+    pub lang: String,
+    pub version: String,
+}
+
+#[derive(Debug, RustcDecodable, RustcEncodable)]
+struct NatsServerInfo {
+    pub server_id: String,
+    pub host: String,
+    pub port: usize,
+    pub version: String,
+    pub auth_required: bool,
+    pub tls_required: bool,
+    pub max_payload: u64,
 }
 
 impl NatsCoreConn {
@@ -60,8 +92,7 @@ impl NatsCoreConn {
         if &s[..5] != "INFO " {
             return Err(Error::ParseError);
         }
-        // TODO handle this better
-        let server_info: NatsServerInfo = json::decode(&s[5..]).unwrap();
+        let server_info: NatsServerInfo = try!(json::decode(&s[5..]));
 
         let mut conn = NatsCoreConn {
             subscriptions: HashMap::new(),
@@ -93,13 +124,13 @@ impl NatsCoreConn {
             pass: None,
             auth_token: None,
             ssl_required: false,
-            name: String::from("TODO"),
-            lang: String::from("rust"),
-            version: String::from("0.1.0"),
+            name: "TODO".to_owned(),
+            lang: "rust".to_owned(),
+            version: "0.1.0".to_owned(),
         };
 
         // TODO set read timeouts?
-        let conn_message = format!("CONNECT {}\r\n", json::encode(&conn_info).unwrap());
+        let conn_message = format!("CONNECT {}\r\n", try!(json::encode(&conn_info)));
         try!(self.stream.write_all(conn_message.as_bytes()));
         try!(self.stream.flush());
 
@@ -191,7 +222,7 @@ impl NatsCoreConn {
     }
 
     pub fn unsubscribe<S: SubscriptionID>(&mut self, subscription: &S, max: Option<usize>) -> Result<()> {
-        let mut max_str = String::from("");
+        let mut max_str = "".to_owned();
 
         match max {
             Some(n) => {
@@ -251,9 +282,8 @@ impl MessageProcessor for NatsCoreConn {
             let mut data = Vec::with_capacity(message.len());
             data.extend_from_slice(message);
             let m = Message {
-                // TODO efficiency
-                subject: String::from(str::from_utf8(&args.subject).unwrap()),
-                reply: args.reply.as_ref().map(|s| String::from(str::from_utf8(s).unwrap())),
+                subject: str::from_utf8(&args.subject).unwrap().to_owned(),
+                reply: args.reply.as_ref().map(|s| str::from_utf8(s).unwrap().to_owned()),
                 data: data,
             };
             // TODO error
@@ -268,21 +298,18 @@ impl MessageProcessor for NatsCoreConn {
     }
 }
 
-// #[derive(Debug)]
-pub struct NatsConn {
-    // config: Config,
-    core_conn: Arc<Mutex<NatsCoreConn>>,
-    next_sid: u64,
-    rng: ThreadRng,
-}
-
 impl NatsConn {
     pub fn new(config: Config) -> Result<NatsConn> {
+        let rng = thread_rng();
+        // if config.shuffle_hosts {
+        //     rng.shuffle(&mut config.hosts);
+        // }
+
         let (reader, core_conn) = try!(NatsCoreConn::new(&config));
         let conn = NatsConn {
             core_conn: Arc::new(Mutex::new(core_conn)),
             next_sid: 0,
-            rng: thread_rng(),
+            rng: rng,
         };
 
         let core_conn_clone = conn.core_conn.clone();
@@ -300,8 +327,7 @@ impl NatsConn {
         loop {
             match reader.read(&mut buf) {
                 Ok(n) => {
-                    let mut c = core_conn.lock().unwrap();
-                    parser.parse(c.deref_mut(), &buf[..n]).unwrap();
+                    parser.parse(core_conn.lock().unwrap().deref_mut(), &buf[..n]).unwrap();
                 },
                 Err(_) => {
                     return;
@@ -324,7 +350,7 @@ impl NatsConn {
     }
 
     fn new_inbox(&mut self) -> String {
-        String::from("_INBOX.") + self.rng.gen_ascii_chars().take(22).collect::<String>().as_str()
+        "_INBOX.".to_owned() + self.rng.gen_ascii_chars().take(22).collect::<String>().as_str()
     }
 
     pub fn request(&mut self, subject: &str, data: &[u8]) -> Result<Message> {
@@ -364,28 +390,4 @@ impl NatsConn {
     pub fn flush(&mut self) -> Result<()> {
         self.core_conn.lock().unwrap().flush()
     }
-}
-
-#[derive(Debug, RustcDecodable, RustcEncodable)]
-struct NatsConnInfo {
-    pub verbose: bool,
-    pub pedantic: bool,
-    pub user: Option<String>,
-    pub pass: Option<String>,
-    pub auth_token: Option<String>,
-    pub ssl_required: bool,
-    pub name: String,
-    pub lang: String,
-    pub version: String,
-}
-
-#[derive(Debug, RustcDecodable, RustcEncodable)]
-struct NatsServerInfo {
-    pub server_id: String,
-    pub host: String,
-    pub port: usize,
-    pub version: String,
-    pub auth_required: bool,
-    pub tls_required: bool,
-    pub max_payload: u64,
 }

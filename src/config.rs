@@ -12,6 +12,7 @@ pub struct Config {
     pub verbose: bool,
     pub pedantic: bool,
     pub hosts: Vec<net::SocketAddr>,
+    pub shuffle_hosts: bool,
     // pub test: Host,
 }
 
@@ -22,6 +23,7 @@ impl Default for Config {
             verbose: false,
             pedantic: false,
             hosts: vec![net::SocketAddr::new(localhost, 4222)],
+            shuffle_hosts: true,
         }
     }
 }
