@@ -326,9 +326,9 @@ impl NatsConn {
         String::from("_INBOX.") + self.rng.gen_ascii_chars().take(22).collect::<String>().as_str()
     }
 
-    pub fn request(&mut self, subject: &str, group: Option<&str>, data: &[u8]) -> Result<Message> {
+    pub fn request(&mut self, subject: &str, data: &[u8]) -> Result<Message> {
         let inbox = self.new_inbox();
-        let sub = try!(self.subscribe_channel(subject, group));
+        let sub = try!(self.subscribe_channel(subject, None));
         let mut core_conn = self.core_conn.lock().unwrap();
         try!(core_conn.unsubscribe(&sub, Some(1)));
         try!(core_conn.publish(subject, Some(&inbox), data));
@@ -344,7 +344,7 @@ impl NatsConn {
         Ok(recv_sub)
     }
 
-    pub fn subscribe_async<F: Fn(Message) + Send + 'static>(&mut self, callback: F, subject: &str, group: Option<&str>) -> Result<AsyncSubscription> {
+    pub fn subscribe_async<F>(&mut self, callback: F, subject: &str, group: Option<&str>) -> Result<AsyncSubscription> where F: Fn(Message) + Send + 'static{
         let sid = self.next_sid;
         self.next_sid += 1;
         let (send_sub, recv_sub) = new_async_subscription(sid, callback);
