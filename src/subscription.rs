@@ -14,15 +14,19 @@ pub trait SubscriptionID {
 // #[derive(Debug)]
 pub struct Subscription {
     pub id: u64,
+    pub subject: String,
+    pub group: Option<String>,
     pub delivered: usize,
     pub max: Option<usize>,
     pub dispatcher: Box<DispatchMessage + Send>,
 }
 
-pub fn new_channel_subscription(id: u64) -> (Subscription, ChannelSubscription) {
+pub fn new_channel_subscription(id: u64, subject: String, group: Option<String>) -> (Subscription, ChannelSubscription) {
     let (sender, receiver) = mpsc::sync_channel::<Message>(10);
     let send_sub = Subscription {
         id: id,
+        subject: subject,
+        group: group,
         delivered: 0,
         max: None,
         dispatcher: Box::new(SendChannelSubscription {
@@ -59,9 +63,11 @@ impl DispatchMessage for SendChannelSubscription {
     }
 }
 
-pub fn new_async_subscription<F>(id: u64, callback: F) -> (Subscription, AsyncSubscription) where F: Fn(Message) + Send + 'static {
+pub fn new_async_subscription<F>(id: u64, subject: String, group: Option<String>, callback: F) -> (Subscription, AsyncSubscription) where F: Fn(Message) + Send + 'static {
     let send_sub = Subscription {
         id: id,
+        subject: subject,
+        group: group,
         delivered: 0,
         max: None,
         dispatcher: Box::new(SendAsyncSubscription {

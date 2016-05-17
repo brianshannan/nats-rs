@@ -1,29 +1,28 @@
-use std::net;
-
-// #[derive(Debug)]
-// pub enum Host {
-//     Uri(String),
-//     Parsed(String, String, String),
-// }
+use url::Url;
+use std::time::Duration;
 
 #[derive(Debug)]
 pub struct Config {
     // TODO
     pub verbose: bool,
     pub pedantic: bool,
-    pub hosts: Vec<net::SocketAddr>,
+    pub hosts: Vec<Url>,
     pub shuffle_hosts: bool,
-    // pub test: Host,
+    pub allow_reconnect: bool,
+    pub max_reconnects: usize,
+    pub reconnect_wait: Duration,
 }
 
 impl Default for Config {
     fn default() -> Config {
-        let localhost = net::IpAddr::V4(net::Ipv4Addr::new(127, 0, 0, 1));
         Config {
             verbose: false,
             pedantic: false,
-            hosts: vec![net::SocketAddr::new(localhost, 4222)],
+            hosts: vec![Url::parse("nats://localhost:4222").unwrap()],
             shuffle_hosts: true,
+            allow_reconnect: true,
+            max_reconnects: 10,
+            reconnect_wait: Duration::new(2, 0),
         }
     }
 }

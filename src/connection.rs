@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::io::BufRead;
 use std::io::BufReader;
-use std::io::BufWriter;
+// use std::io::BufWriter;
 use std::io::Read;
 use std::io::Write;
 use std::ops::DerefMut;
@@ -31,7 +31,7 @@ use subscription::Subscription;
 use subscription::SubscriptionID;
 
 // TODO TLS
-// TODO Need to figure out flushing
+// TODO Buffer messages, need to figure out flushing
 // TODO need to add reconnects
 // TODO another trait for message transmission?
 
@@ -45,17 +45,19 @@ pub trait MessageProcessor {
 
 // #[derive(Debug)]
 pub struct NatsConn {
-    // config: Config,
     core_conn: Arc<Mutex<NatsCoreConn>>,
     next_sid: u64,
     rng: ThreadRng,
 }
 
 // #[derive(Debug)]
-pub struct NatsCoreConn {
-    stream: BufWriter<TcpStream>,
+struct NatsCoreConn {
+    // writer: BufWriter<TcpStream>,
+    config: Config,
+    writer: TcpStream,
     subscriptions: HashMap<u64, Subscription>,
     server_info: NatsServerInfo,
+    server_idx: usize,
 }
 
 #[derive(Debug, RustcDecodable, RustcEncodable)]
@@ -82,44 +84,167 @@ struct NatsServerInfo {
     pub max_payload: u64,
 }
 
-impl NatsCoreConn {
-    pub fn new(config: &Config) -> Result<(BufReader<TcpStream>, NatsCoreConn)> {
-        let stream = try!(NatsCoreConn::create_tcp_stream(config));
-        let mut reader = BufReader::new(try!(stream.try_clone()));
-
-        let mut s = "".to_string();
-        try!(reader.read_line(&mut s));
-        if &s[..5] != "INFO " {
-            return Err(Error::ParseError);
+macro_rules! try_continue {
+    ($expr:expr) => (match $expr {
+        Ok(val) => val,
+        Err(_) => {
+            continue;
         }
-        let server_info: NatsServerInfo = try!(json::decode(&s[5..]));
+    })
+}
+
+impl NatsConn {
+    pub fn new(mut config: Config) -> Result<NatsConn> {
+        let mut rng = thread_rng();
+        if config.shuffle_hosts {
+            rng.shuffle(&mut config.hosts);
+        }
+
+        let (reader, core_conn) = try!(NatsCoreConn::new(config));
+        let conn = NatsConn {
+            core_conn: Arc::new(Mutex::new(core_conn)),
+            next_sid: 0,
+            rng: rng,
+        };
+
+        let core_conn_clone = conn.core_conn.clone();
+        thread::spawn(move || {
+            // TODO how should this error be handled?
+            NatsConn::read_loop(core_conn_clone, reader).unwrap();
+        });
+
+        Ok(conn)
+    }
+
+    fn read_loop(core_conn: Arc<Mutex<NatsCoreConn>>, mut reader: BufReader<TcpStream>) -> Result<()> {
+        let mut parser = Parser::new();
+        // TODO use a different size?
+        // TODO need to disconnect socket before trying to reconnect?
+        let mut buf: [u8; 32768] = [0; 32768];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(n) => {
+                    let mut c = core_conn.lock().unwrap();
+                    if n == 0 {
+                        // This is an error condition for BufReaders, apparently
+                        reader = try!(c.reconnect());
+                        continue;
+                    }
+                    match parser.parse(c.deref_mut(), &buf[..n]) {
+                        Ok(()) => {},
+                        Err(_) => {
+                            reader = try!(c.reconnect());
+                        },
+                    }
+                },
+                Err(_) => {
+                    reader = try!(core_conn.lock().unwrap().reconnect());
+                },
+            };
+        }
+    }
+
+    pub fn close(&mut self) -> Result<()> {
+        try!(self.core_conn.lock().unwrap().close());
+        Ok(())
+    }
+
+    pub fn publish(&mut self, subject: &str, reply: Option<&str>, data: &[u8]) -> Result<()> {
+        self.core_conn.lock().unwrap().publish(subject, reply, data)
+    }
+
+    pub fn publish_message(&mut self, message: Message) -> Result<()> {
+        self.core_conn.lock().unwrap().publish(&message.subject, message.reply.as_ref().map(|s| s.as_str()), &message.data)
+    }
+
+    fn new_inbox(&mut self) -> String {
+        "_INBOX.".to_owned() + self.rng.gen_ascii_chars().take(22).collect::<String>().as_str()
+    }
+
+    pub fn request(&mut self, subject: &str, data: &[u8]) -> Result<Message> {
+        let inbox = self.new_inbox();
+        let sub = try!(self.subscribe_channel(subject, None));
+        let mut core_conn = self.core_conn.lock().unwrap();
+        try!(core_conn.unsubscribe(&sub, Some(1)));
+        try!(core_conn.publish(subject, Some(&inbox), data));
+        // TODO timeout? select! call requires nightly
+        Ok(try!(sub.receiver.recv()))
+    }
+
+    pub fn subscribe_channel(&mut self, subject: &str, group: Option<&str>) -> Result<ChannelSubscription> {
+        let sid = self.next_sid;
+        self.next_sid += 1;
+        let (send_sub, recv_sub) = new_channel_subscription(sid, subject.to_owned(), group.map(|s| s.to_owned()));
+        try!(self.core_conn.lock().unwrap().subscribe(subject, group, send_sub));
+        Ok(recv_sub)
+    }
+
+    pub fn subscribe_async<F>(&mut self, callback: F, subject: &str, group: Option<&str>) -> Result<AsyncSubscription> where F: Fn(Message) + Send + 'static{
+        let sid = self.next_sid;
+        self.next_sid += 1;
+        let (send_sub, recv_sub) = new_async_subscription(sid, subject.to_owned(), group.map(|s| s.to_owned()), callback);
+        try!(self.core_conn.lock().unwrap().subscribe(subject, group, send_sub));
+        Ok(recv_sub)
+    }
+
+    pub fn unsubscribe<S: SubscriptionID>(&mut self, subscription: &S) -> Result<()> {
+        self.core_conn.lock().unwrap().unsubscribe(subscription, None)
+    }
+
+    pub fn auto_unsubscribe<S: SubscriptionID>(&mut self, subscription: &S, max: usize) -> Result<()> {
+        self.core_conn.lock().unwrap().unsubscribe(subscription, Some(max))
+    }
+
+    pub fn flush(&mut self) -> Result<()> {
+        self.core_conn.lock().unwrap().flush()
+    }
+}
+
+impl NatsCoreConn {
+    pub fn new(config: Config) -> Result<(BufReader<TcpStream>, NatsCoreConn)> {
+        let (server_idx, writer) = try!(NatsCoreConn::create_tcp_stream(&config));
+        let mut reader = BufReader::new(try!(writer.try_clone()));
+
+        let server_info = try!(NatsCoreConn::read_server_info(&mut reader));
 
         let mut conn = NatsCoreConn {
+            config: config,
             subscriptions: HashMap::new(),
-            stream: BufWriter::new(stream),
+            writer: writer,
             server_info: server_info,
+            server_idx: server_idx,
         };
-        try!(conn.connect(&mut reader, config));
+        try!(conn.connect(&mut reader));
 
         Ok((reader, conn))
     }
 
-    fn create_tcp_stream(config: &Config) -> Result<TcpStream> {
-        for host in &config.hosts {
-            if let Ok(stream) = TcpStream::connect(host) {
-                return Ok(stream);
+    fn create_tcp_stream(config: &Config) -> Result<(usize, TcpStream)> {
+        for (idx, host) in config.hosts.iter().enumerate() {
+            if let Ok(writer) = TcpStream::connect(host) {
+                return Ok((idx, writer));
             }
         }
 
         return Err(Error::NoServers);
     }
 
+    fn read_server_info(reader: &mut BufReader<TcpStream>) -> Result<NatsServerInfo> {
+        let mut s = "".to_owned();
+        try!(reader.read_line(&mut s));
+        if s.len() < 5 || &s[..5] != "INFO " {
+            return Err(Error::ParseError)
+        }
+        let server_info: NatsServerInfo = try!(json::decode(&s[5..]));
+        Ok(server_info)
+    }
+
     // Protocol is "CONNECT <json options>"
-    fn connect(&mut self, reader: &mut BufReader<TcpStream>, config: &Config) -> Result<()> {
+    fn connect(&mut self, reader: &mut BufReader<TcpStream>) -> Result<()> {
         // TODO need to parse the host
         let conn_info = NatsConnInfo {
-            verbose: config.verbose,
-            pedantic: config.pedantic,
+            verbose: self.config.verbose,
+            pedantic: self.config.pedantic,
             user: None,
             pass: None,
             auth_token: None,
@@ -131,11 +256,11 @@ impl NatsCoreConn {
 
         // TODO set read timeouts?
         let conn_message = format!("CONNECT {}\r\n", try!(json::encode(&conn_info)));
-        try!(self.stream.write_all(conn_message.as_bytes()));
-        try!(self.stream.flush());
+        try!(self.writer.write_all(conn_message.as_bytes()));
+        try!(self.writer.flush());
 
         // TODO fix
-        if config.verbose {
+        if self.config.verbose {
             let mut response = "".to_string();
             try!(reader.read_line(&mut response));
             if response != "+OK\r\n" {
@@ -145,7 +270,7 @@ impl NatsCoreConn {
 
         // send a ping message and expect a PONG
         try!(self.ping());
-        try!(self.stream.flush());
+        try!(self.writer.flush());
 
         let mut s = "".to_string();
         try!(reader.read_line(&mut s));
@@ -156,23 +281,47 @@ impl NatsCoreConn {
         return Ok(());
     }
 
+    pub fn reconnect(&mut self) -> Result<(BufReader<TcpStream>)> {
+        // TODO
+        if !self.config.allow_reconnect {
+            // TODO right error
+            return Err(Error::NoServers);
+        }
+
+        for _ in 0..self.config.max_reconnects {
+            thread::sleep(self.config.reconnect_wait);
+            self.server_idx = (self.server_idx + 1) % self.config.hosts.len();
+
+            let writer = try_continue!(TcpStream::connect(&self.config.hosts[self.server_idx]));
+            let mut reader = BufReader::new(try_continue!(writer.try_clone()));
+            self.writer = writer;
+            self.server_info = try_continue!(NatsCoreConn::read_server_info(&mut reader));
+            try_continue!(self.connect(&mut reader));
+            try_continue!(self.resend_subscriptions());
+            return Ok(reader);
+        }
+
+        Err(Error::NoServers)
+    }
+
+    // TODO needed?
     pub fn close(&mut self) -> Result<()> {
-        try!(self.stream.flush());
+        try!(self.writer.flush());
         Ok(())
     }
 
     pub fn flush(&mut self) -> Result<()> {
-        try!(self.stream.flush());
+        try!(self.writer.flush());
         Ok(())
     }
 
     pub fn ping(&mut self) -> Result<()> {
-        try!(self.stream.write_all("PING\r\n".as_bytes()));
+        try!(self.writer.write_all("PING\r\n".as_bytes()));
         Ok(())
     }
 
     pub fn pong(&mut self) -> Result<()> {
-        try!(self.stream.write_all("PONG\r\n".as_bytes()));
+        try!(self.writer.write_all("PONG\r\n".as_bytes()));
         Ok(())
     }
 
@@ -187,13 +336,11 @@ impl NatsCoreConn {
         buf.extend("PUB ".as_bytes());
         buf.extend(subject.as_bytes());
         buf.extend(" ".as_bytes());
-        match reply {
-            Some(s) => {
-                buf.extend(s.as_bytes());
-                buf.extend(" ".as_bytes());
-            },
-            None => (),
-        };
+
+        if let Some(s) = reply {
+            buf.extend(s.as_bytes());
+            buf.extend(" ".as_bytes());
+        }
 
         if data.len() == 0 {
             buf.extend("0".as_bytes());
@@ -208,7 +355,7 @@ impl NatsCoreConn {
         buf.extend("\r\n".as_bytes());
 
         trace!("publishing a message to {}", subject);
-        try!(self.stream.write_all(&buf));
+        try!(self.writer.write_all(&buf));
         Ok(())
     }
 
@@ -217,7 +364,16 @@ impl NatsCoreConn {
         self.subscriptions.insert(sid, subscription);
         let sub_message = format!("SUB {} {} {}\r\n", subject, group.unwrap_or(""), sid);
         trace!("subscribing to {}", subject);
-        try!(self.stream.write_all(sub_message.as_bytes()));
+        try!(self.writer.write_all(sub_message.as_bytes()));
+        Ok(())
+    }
+
+    fn resend_subscriptions(&mut self) -> Result<()> {
+        // TODO coalesce into one write
+        for (sid, sub) in &self.subscriptions {
+            let sub_message = format!("SUB {} {} {}\r\n", sub.subject, sub.group.as_ref().unwrap_or(&"".to_owned()), sid);
+            try!(self.writer.write_all(sub_message.as_bytes()));
+        }
         Ok(())
     }
 
@@ -238,7 +394,7 @@ impl NatsCoreConn {
 
         trace!("unsubscribing to {}", subscription.sub_id());
         let unsub_message = format!("UNSUB {} {}", subscription.sub_id(), max_str);
-        try!(self.stream.write_all(unsub_message.as_bytes()));
+        try!(self.writer.write_all(unsub_message.as_bytes()));
         Ok(())
     }
 }
@@ -295,99 +451,5 @@ impl MessageProcessor for NatsCoreConn {
                 self.subscriptions.remove(&args.sid);
             }
         }
-    }
-}
-
-impl NatsConn {
-    pub fn new(config: Config) -> Result<NatsConn> {
-        let rng = thread_rng();
-        // if config.shuffle_hosts {
-        //     rng.shuffle(&mut config.hosts);
-        // }
-
-        let (reader, core_conn) = try!(NatsCoreConn::new(&config));
-        let conn = NatsConn {
-            core_conn: Arc::new(Mutex::new(core_conn)),
-            next_sid: 0,
-            rng: rng,
-        };
-
-        let core_conn_clone = conn.core_conn.clone();
-        thread::spawn(move || {
-            NatsConn::read_loop(core_conn_clone, reader);
-        });
-
-        Ok(conn)
-    }
-
-    fn read_loop(core_conn: Arc<Mutex<NatsCoreConn>>, mut reader: BufReader<TcpStream>) {
-        let mut parser = Parser::new();
-        // TODO check size
-        let mut buf: [u8; 32768] = [0; 32768];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(n) => {
-                    parser.parse(core_conn.lock().unwrap().deref_mut(), &buf[..n]).unwrap();
-                },
-                Err(_) => {
-                    return;
-                },
-            };
-        }
-    }
-
-    pub fn close(&mut self) -> Result<()> {
-        try!(self.core_conn.lock().unwrap().close());
-        Ok(())
-    }
-
-    pub fn publish(&mut self, subject: &str, reply: Option<&str>, data: &[u8]) -> Result<()> {
-        self.core_conn.lock().unwrap().publish(subject, reply, data)
-    }
-
-    pub fn publish_message(&mut self, message: Message) -> Result<()> {
-        self.core_conn.lock().unwrap().publish(&message.subject, message.reply.as_ref().map(|s| s.as_str()), &message.data)
-    }
-
-    fn new_inbox(&mut self) -> String {
-        "_INBOX.".to_owned() + self.rng.gen_ascii_chars().take(22).collect::<String>().as_str()
-    }
-
-    pub fn request(&mut self, subject: &str, data: &[u8]) -> Result<Message> {
-        let inbox = self.new_inbox();
-        let sub = try!(self.subscribe_channel(subject, None));
-        let mut core_conn = self.core_conn.lock().unwrap();
-        try!(core_conn.unsubscribe(&sub, Some(1)));
-        try!(core_conn.publish(subject, Some(&inbox), data));
-        // TODO timeout? select! call requires nightly
-        Ok(try!(sub.receiver.recv()))
-    }
-
-    pub fn subscribe_channel(&mut self, subject: &str, group: Option<&str>) -> Result<ChannelSubscription> {
-        let sid = self.next_sid;
-        self.next_sid += 1;
-        let (send_sub, recv_sub) = new_channel_subscription(sid);
-        try!(self.core_conn.lock().unwrap().subscribe(subject, group, send_sub));
-        Ok(recv_sub)
-    }
-
-    pub fn subscribe_async<F>(&mut self, callback: F, subject: &str, group: Option<&str>) -> Result<AsyncSubscription> where F: Fn(Message) + Send + 'static{
-        let sid = self.next_sid;
-        self.next_sid += 1;
-        let (send_sub, recv_sub) = new_async_subscription(sid, callback);
-        try!(self.core_conn.lock().unwrap().subscribe(subject, group, send_sub));
-        Ok(recv_sub)
-    }
-
-    pub fn unsubscribe<S: SubscriptionID>(&mut self, subscription: &S) -> Result<()> {
-        self.core_conn.lock().unwrap().unsubscribe(subscription, None)
-    }
-
-    pub fn auto_unsubscribe<S: SubscriptionID>(&mut self, subscription: &S, max: usize) -> Result<()> {
-        self.core_conn.lock().unwrap().unsubscribe(subscription, Some(max))
-    }
-
-    pub fn flush(&mut self) -> Result<()> {
-        self.core_conn.lock().unwrap().flush()
     }
 }

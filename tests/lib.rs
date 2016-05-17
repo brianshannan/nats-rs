@@ -49,3 +49,28 @@ fn test_pub_sub_callback() {
     conn.unsubscribe(&sub).unwrap();
     conn.close().unwrap();
 }
+
+// #[test]
+// fn test_reconnect_needs_manual_intervention() {
+//     let config = config::Config::default();
+//     let mut conn = connection::NatsConn::new(config).unwrap();
+//     let sub = conn.subscribe_channel("topic1", None).unwrap();
+//     conn.publish("topic1", None, b"data").unwrap();
+//     conn.flush().unwrap();
+//
+//     thread::sleep(Duration::new(1, 0));
+//     assert_eq!(b"data", sub.receiver.try_recv().unwrap().data.as_slice());
+//     println!("first");
+//
+//     use std::thread;
+//     thread::sleep(Duration::new(10, 0));
+//
+//     conn.publish("topic1", None, b"data2");
+//     conn.flush().unwrap();
+//
+//     thread::sleep(Duration::new(1, 0));
+//     assert_eq!(b"data2", sub.receiver.try_recv().unwrap().data.as_slice());
+//
+//     conn.unsubscribe(&sub).unwrap();
+//     conn.close().unwrap();
+// }

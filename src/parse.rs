@@ -1,7 +1,6 @@
 use std::cmp;
 
 use Result;
-// use connection::NatsCoreConn;
 use connection::MessageProcessor;
 use errors::Error;
 
@@ -73,10 +72,10 @@ impl Parser {
 
     pub fn parse_message_arg(&self, data: &[u8]) -> Result<MessageArg> {
         // TODO check performance
-        // ' ', '\t', '\r', '\n':
         let vecs = data.split(|b| {
-                let c = *b as char;
-                c == ' ' || c == '\t' || c == '\r' || c == '\n'
+                (*b as char).is_whitespace()
+                // let c = *b as char;
+                // c == ' ' || c == '\t' || c == '\r' || c == '\n'
             })
             .filter(|v| v.len() > 0)
             .collect::<Vec<&[u8]>>();

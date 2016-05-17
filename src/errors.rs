@@ -7,6 +7,7 @@ use rustc_serialize::json;
 
 use message::Message;
 
+// TODO make this smaller?
 #[derive(Debug)]
 pub enum Error {
     NoServers,
