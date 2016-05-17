@@ -32,7 +32,7 @@ use subscription::SubscriptionID;
 
 // TODO TLS
 // TODO Buffer messages, need to figure out flushing
-// TODO need to add reconnects
+// TODO test reconnects
 // TODO another trait for message transmission?
 
 pub trait MessageProcessor {
@@ -175,7 +175,7 @@ impl NatsConn {
         let sid = self.next_sid;
         self.next_sid += 1;
         let (send_sub, recv_sub) = new_channel_subscription(sid, subject.to_owned(), group.map(|s| s.to_owned()));
-        try!(self.core_conn.lock().unwrap().subscribe(subject, group, send_sub));
+        try!(self.core_conn.lock().unwrap().subscribe(send_sub));
         Ok(recv_sub)
     }
 
@@ -183,7 +183,7 @@ impl NatsConn {
         let sid = self.next_sid;
         self.next_sid += 1;
         let (send_sub, recv_sub) = new_async_subscription(sid, subject.to_owned(), group.map(|s| s.to_owned()), callback);
-        try!(self.core_conn.lock().unwrap().subscribe(subject, group, send_sub));
+        try!(self.core_conn.lock().unwrap().subscribe(send_sub));
         Ok(recv_sub)
     }
 
@@ -354,16 +354,14 @@ impl NatsCoreConn {
         }
         buf.extend("\r\n".as_bytes());
 
-        trace!("publishing a message to {}", subject);
         try!(self.writer.write_all(&buf));
         Ok(())
     }
 
-    pub fn subscribe(&mut self, subject: &str, group: Option<&str>, subscription: Subscription) -> Result<()> {
+    pub fn subscribe(&mut self, subscription: Subscription) -> Result<()> {
         let sid = subscription.id;
+        let sub_message = format!("SUB {} {} {}\r\n", subscription.subject, subscription.group.as_ref().unwrap_or(&"".to_owned()), sid);
         self.subscriptions.insert(sid, subscription);
-        let sub_message = format!("SUB {} {} {}\r\n", subject, group.unwrap_or(""), sid);
-        trace!("subscribing to {}", subject);
         try!(self.writer.write_all(sub_message.as_bytes()));
         Ok(())
     }
@@ -392,7 +390,6 @@ impl NatsCoreConn {
             },
         };
 
-        trace!("unsubscribing to {}", subscription.sub_id());
         let unsub_message = format!("UNSUB {} {}", subscription.sub_id(), max_str);
         try!(self.writer.write_all(unsub_message.as_bytes()));
         Ok(())
@@ -401,7 +398,6 @@ impl NatsCoreConn {
 
 impl MessageProcessor for NatsCoreConn {
     fn process_ok(&mut self) {
-        trace!("received +OK");
     }
 
     fn process_err(&mut self, message: &[u8]) {
@@ -410,14 +406,11 @@ impl MessageProcessor for NatsCoreConn {
     }
 
     fn process_ping(&mut self) {
-        // TODO send pong
-        trace!("received PING");
         self.pong().unwrap();
     }
 
     fn process_pong(&mut self) {
         // TODO
-        trace!("received PONG");
     }
 
     fn process_message(&mut self, args: &MessageArg, message: &[u8]) {
