@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::io::BufRead;
 use std::io::BufReader;
-// use std::io::BufWriter;
 use std::io::Read;
 use std::io::Write;
+use std::net::TcpStream;
 use std::ops::DerefMut;
 use std::str;
 use std::sync::Arc;
@@ -13,8 +13,10 @@ use rand::thread_rng;
 use rand::Rng;
 use rand::ThreadRng;
 
-use std::net::TcpStream;
+use openssl::ssl::MaybeSslStream;
+use openssl::ssl::SslStream;
 use rustc_serialize::json;
+use url::Url;
 
 use Result;
 use config::Config;
@@ -22,8 +24,8 @@ use errors::Error;
 use message::Message;
 use parse::MessageArg;
 use parse::Parser;
-use subscription::new_channel_subscription;
 use subscription::new_async_subscription;
+use subscription::new_channel_subscription;
 use subscription::AsyncSubscription;
 use subscription::ChannelSubscription;
 use subscription::DispatchMessage;
@@ -34,6 +36,8 @@ use subscription::SubscriptionID;
 // TODO Buffer messages, need to figure out flushing
 // TODO test reconnects
 // TODO another trait for message transmission?
+
+type Stream = MaybeSslStream<TcpStream>;
 
 pub trait MessageProcessor {
     fn process_ok(&mut self);
@@ -54,7 +58,7 @@ pub struct NatsConn {
 struct NatsCoreConn {
     // writer: BufWriter<TcpStream>,
     config: Config,
-    writer: TcpStream,
+    writer: Stream,
     subscriptions: HashMap<u64, Subscription>,
     server_info: NatsServerInfo,
     server_idx: usize,
@@ -84,6 +88,9 @@ struct NatsServerInfo {
     pub max_payload: u64,
 }
 
+// Unwrap the value if it's in the Ok() variant,
+// issue a 'continue' if it's the Err() variant.
+// Should only be used in a loop.
 macro_rules! try_continue {
     ($expr:expr) => (match $expr {
         Ok(val) => val,
@@ -110,13 +117,14 @@ impl NatsConn {
         let core_conn_clone = conn.core_conn.clone();
         thread::spawn(move || {
             // TODO how should this error be handled?
+            // this only happens if reconnect completely fails
             NatsConn::read_loop(core_conn_clone, reader).unwrap();
         });
 
         Ok(conn)
     }
 
-    fn read_loop(core_conn: Arc<Mutex<NatsCoreConn>>, mut reader: BufReader<TcpStream>) -> Result<()> {
+    fn read_loop(core_conn: Arc<Mutex<NatsCoreConn>>, mut reader: BufReader<Stream>) -> Result<()> {
         let mut parser = Parser::new();
         // TODO use a different size?
         // TODO need to disconnect socket before trying to reconnect?
@@ -179,7 +187,7 @@ impl NatsConn {
         Ok(recv_sub)
     }
 
-    pub fn subscribe_async<F>(&mut self, callback: F, subject: &str, group: Option<&str>) -> Result<AsyncSubscription> where F: Fn(Message) + Send + 'static{
+    pub fn subscribe_async<F>(&mut self, subject: &str, group: Option<&str>, callback: F) -> Result<AsyncSubscription> where F: Fn(Message) + Send + 'static{
         let sid = self.next_sid;
         self.next_sid += 1;
         let (send_sub, recv_sub) = new_async_subscription(sid, subject.to_owned(), group.map(|s| s.to_owned()), callback);
@@ -201,11 +209,11 @@ impl NatsConn {
 }
 
 impl NatsCoreConn {
-    pub fn new(config: Config) -> Result<(BufReader<TcpStream>, NatsCoreConn)> {
-        let (server_idx, writer) = try!(NatsCoreConn::create_tcp_stream(&config));
-        let mut reader = BufReader::new(try!(writer.try_clone()));
+    pub fn new(config: Config) -> Result<(BufReader<Stream>, NatsCoreConn)> {
+        let (server_idx, writer, reader) = try!(NatsCoreConn::create_stream(&config));
+        let mut buf_reader = BufReader::new(reader);
 
-        let server_info = try!(NatsCoreConn::read_server_info(&mut reader));
+        let server_info = try!(NatsCoreConn::read_server_info(&mut buf_reader));
 
         let mut conn = NatsCoreConn {
             config: config,
@@ -214,22 +222,32 @@ impl NatsCoreConn {
             server_info: server_info,
             server_idx: server_idx,
         };
-        try!(conn.connect(&mut reader));
+        try!(conn.connect(&mut buf_reader));
 
-        Ok((reader, conn))
+        Ok((buf_reader, conn))
     }
 
-    fn create_tcp_stream(config: &Config) -> Result<(usize, TcpStream)> {
+    fn create_stream(config: &Config) -> Result<(usize, Stream, Stream)> {
         for (idx, host) in config.hosts.iter().enumerate() {
-            if let Ok(writer) = TcpStream::connect(host) {
-                return Ok((idx, writer));
+            if let Ok((writer, reader)) = NatsCoreConn::create_ssl_stream(config, host) {
+                return Ok((idx, writer, reader));
             }
         }
 
         return Err(Error::NoServers);
     }
 
-    fn read_server_info(reader: &mut BufReader<TcpStream>) -> Result<NatsServerInfo> {
+    fn create_ssl_stream(config: &Config, host: &Url) -> Result<(Stream, Stream)>{
+        let writer = try!(TcpStream::connect(host));
+        let ssl_writer = match config.ssl_context {
+            Some(ref sc) => MaybeSslStream::Ssl(try!(SslStream::connect(sc, writer))),
+            None => MaybeSslStream::Normal(writer),
+        };
+        let ssl_reader = try!(ssl_writer.try_clone());
+        Ok((ssl_writer, ssl_reader))
+    }
+
+    fn read_server_info(reader: &mut BufReader<Stream>) -> Result<NatsServerInfo> {
         let mut s = "".to_owned();
         try!(reader.read_line(&mut s));
         if s.len() < 5 || &s[..5] != "INFO " {
@@ -240,7 +258,7 @@ impl NatsCoreConn {
     }
 
     // Protocol is "CONNECT <json options>"
-    fn connect(&mut self, reader: &mut BufReader<TcpStream>) -> Result<()> {
+    fn connect(&mut self, reader: &mut BufReader<Stream>) -> Result<()> {
         // TODO need to parse the host
         let conn_info = NatsConnInfo {
             verbose: self.config.verbose,
@@ -281,7 +299,7 @@ impl NatsCoreConn {
         return Ok(());
     }
 
-    pub fn reconnect(&mut self) -> Result<(BufReader<TcpStream>)> {
+    pub fn reconnect(&mut self) -> Result<(BufReader<Stream>)> {
         // TODO
         if !self.config.allow_reconnect {
             // TODO right error
@@ -292,13 +310,14 @@ impl NatsCoreConn {
             thread::sleep(self.config.reconnect_wait);
             self.server_idx = (self.server_idx + 1) % self.config.hosts.len();
 
-            let writer = try_continue!(TcpStream::connect(&self.config.hosts[self.server_idx]));
-            let mut reader = BufReader::new(try_continue!(writer.try_clone()));
+            let (writer, reader) = NatsCoreConn::create_ssl_stream(&self.config, &self.config.hosts[self.server_idx]).unwrap();
+            let mut buf_reader = BufReader::new(reader);
+
             self.writer = writer;
-            self.server_info = try_continue!(NatsCoreConn::read_server_info(&mut reader));
-            try_continue!(self.connect(&mut reader));
+            self.server_info = try_continue!(NatsCoreConn::read_server_info(&mut buf_reader));
+            try_continue!(self.connect(&mut buf_reader));
             try_continue!(self.resend_subscriptions());
-            return Ok(reader);
+            return Ok(buf_reader);
         }
 
         Err(Error::NoServers)

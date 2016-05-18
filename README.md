@@ -14,9 +14,9 @@ let mut conn = NatsConn::new(Config::default()).unwrap();
 let channel_sub = conn.subscribe_channel("subject", Some("queue")).unwrap();
 let message = channel_sub.receiver.recv().unwrap();
 
-let async_sub = conn.subscribe_async(move |message| {
+let async_sub = conn.subscribe_async("subject", None, move |message| {
   println!("received message");
-}, "subject", None).unwrap();
+}).unwrap();
 ```
 
 ### Publishing

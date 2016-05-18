@@ -1,5 +1,7 @@
-use url::Url;
 use std::time::Duration;
+
+use openssl::ssl::SslContext;
+use url::Url;
 
 #[derive(Debug)]
 pub struct Config {
@@ -11,6 +13,7 @@ pub struct Config {
     pub allow_reconnect: bool,
     pub max_reconnects: usize,
     pub reconnect_wait: Duration,
+    pub ssl_context: Option<SslContext>,
 }
 
 impl Default for Config {
@@ -23,6 +26,7 @@ impl Default for Config {
             allow_reconnect: true,
             max_reconnects: 10,
             reconnect_wait: Duration::new(2, 0),
+            ssl_context: None,
         }
     }
 }

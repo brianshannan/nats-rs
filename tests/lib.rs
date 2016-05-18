@@ -38,9 +38,9 @@ fn test_pub_sub_callback() {
     let num = Arc::new(Mutex::new(47));
     let num2 = num.clone();
 
-    let sub = conn.subscribe_async(move |_: Message| {
+    let sub = conn.subscribe_async("topic2", None, move |_: Message| {
         *num2.lock().unwrap() = 72;
-    }, "topic2", None).unwrap();
+    }).unwrap();
     conn.publish("topic2", None, b"data").unwrap();
     conn.flush().unwrap();
 
