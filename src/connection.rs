@@ -64,6 +64,8 @@ struct NatsCoreConn {
     server_idx: usize,
 }
 
+// TODO the String fields could be &str, but the
+// serialization macros don't like it
 #[derive(Debug, RustcDecodable, RustcEncodable)]
 struct NatsConnInfo {
     pub verbose: bool,
@@ -210,10 +212,13 @@ impl NatsConn {
 
 impl NatsCoreConn {
     pub fn new(config: Config) -> Result<(BufReader<Stream>, NatsCoreConn)> {
-        let (server_idx, writer, reader) = try!(NatsCoreConn::create_stream(&config));
-        let mut buf_reader = BufReader::new(reader);
+        let (server_idx, stream) = try!(NatsCoreConn::create_stream(&config));
+        let mut buf_reader = BufReader::new(stream);
 
         let server_info = try!(NatsCoreConn::read_server_info(&mut buf_reader));
+
+        let (reader, writer) = try!(NatsCoreConn::tcp_to_ssl(&config, buf_reader.into_inner()));
+        let mut buf_reader = BufReader::new(reader);
 
         let mut conn = NatsCoreConn {
             config: config,
@@ -227,27 +232,25 @@ impl NatsCoreConn {
         Ok((buf_reader, conn))
     }
 
-    fn create_stream(config: &Config) -> Result<(usize, Stream, Stream)> {
+    fn create_stream(config: &Config) -> Result<(usize, TcpStream)> {
         for (idx, host) in config.hosts.iter().enumerate() {
-            if let Ok((writer, reader)) = NatsCoreConn::create_ssl_stream(config, host) {
-                return Ok((idx, writer, reader));
+            if let Ok(stream) = TcpStream::connect(host) {
+                return Ok((idx, stream));
             }
         }
-
         return Err(Error::NoServers);
     }
 
-    fn create_ssl_stream(config: &Config, host: &Url) -> Result<(Stream, Stream)>{
-        let writer = try!(TcpStream::connect(host));
-        let ssl_writer = match config.ssl_context {
-            Some(ref sc) => MaybeSslStream::Ssl(try!(SslStream::connect(sc, writer))),
-            None => MaybeSslStream::Normal(writer),
+    fn tcp_to_ssl(config: &Config, stream: TcpStream) -> Result<(Stream, Stream)> {
+        let ssl_reader = match config.ssl_context {
+            Some(ref sc) => MaybeSslStream::Ssl(try!(SslStream::connect(sc, stream))),
+            None => MaybeSslStream::Normal(stream),
         };
-        let ssl_reader = try!(ssl_writer.try_clone());
+        let ssl_writer = try!(ssl_reader.try_clone());
         Ok((ssl_writer, ssl_reader))
     }
 
-    fn read_server_info(reader: &mut BufReader<Stream>) -> Result<NatsServerInfo> {
+    fn read_server_info(reader: &mut BufReader<TcpStream>) -> Result<NatsServerInfo> {
         let mut s = "".to_owned();
         try!(reader.read_line(&mut s));
         if s.len() < 5 || &s[..5] != "INFO " {
@@ -259,30 +262,41 @@ impl NatsCoreConn {
 
     // Protocol is "CONNECT <json options>"
     fn connect(&mut self, reader: &mut BufReader<Stream>) -> Result<()> {
-        // TODO need to parse the host
-        let conn_info = NatsConnInfo {
-            verbose: self.config.verbose,
-            pedantic: self.config.pedantic,
-            user: None,
-            pass: None,
-            auth_token: None,
-            ssl_required: false,
-            name: "TODO".to_owned(),
-            lang: "rust".to_owned(),
-            version: "0.1.0".to_owned(),
-        };
+        // TODO this method is now a mess
+        {
+            let host = &self.config.hosts[self.server_idx];
+            let username = {
+                if host.username().len() > 0 {
+                    Some(host.username().to_owned())
+                } else {
+                    None
+                }
+            };
 
-        // TODO set read timeouts?
-        let conn_message = format!("CONNECT {}\r\n", try!(json::encode(&conn_info)));
-        try!(self.writer.write_all(conn_message.as_bytes()));
-        try!(self.writer.flush());
+            let conn_info = NatsConnInfo {
+                verbose: self.config.verbose,
+                pedantic: self.config.pedantic,
+                user: username,
+                pass: host.password().map(|s| s.to_owned()),
+                auth_token: None,
+                ssl_required: false,
+                name: "TODO".to_owned(),
+                lang: "rust".to_owned(),
+                version: "0.1.0".to_owned(),
+            };
 
-        // TODO fix
-        if self.config.verbose {
-            let mut response = "".to_string();
-            try!(reader.read_line(&mut response));
-            if response != "+OK\r\n" {
-                return Err(Error::ParseError);
+            // TODO set read timeouts?
+            let conn_message = format!("CONNECT {}\r\n", try!(json::encode(&conn_info)));
+            try!(self.writer.write_all(conn_message.as_bytes()));
+            try!(self.writer.flush());
+
+            // TODO fix
+            if self.config.verbose {
+                let mut response = "".to_string();
+                try!(reader.read_line(&mut response));
+                if response != "+OK\r\n" {
+                    return Err(Error::ParseError);
+                }
             }
         }
 
@@ -300,7 +314,6 @@ impl NatsCoreConn {
     }
 
     pub fn reconnect(&mut self) -> Result<(BufReader<Stream>)> {
-        // TODO
         if !self.config.allow_reconnect {
             // TODO right error
             return Err(Error::NoServers);
@@ -310,11 +323,20 @@ impl NatsCoreConn {
             thread::sleep(self.config.reconnect_wait);
             self.server_idx = (self.server_idx + 1) % self.config.hosts.len();
 
-            let (writer, reader) = NatsCoreConn::create_ssl_stream(&self.config, &self.config.hosts[self.server_idx]).unwrap();
+            // let (server_idx, stream) = try!(NatsCoreConn::create_stream(&config));
+            let stream = try_continue!(TcpStream::connect(&self.config.hosts[self.server_idx]));
+            let mut buf_reader = BufReader::new(stream);
+
+            self.server_info = try_continue!(NatsCoreConn::read_server_info(&mut buf_reader));
+
+            let (reader, writer) = try_continue!(NatsCoreConn::tcp_to_ssl(&self.config, buf_reader.into_inner()));
             let mut buf_reader = BufReader::new(reader);
 
+            //let (writer, reader) = NatsCoreConn::create_ssl_stream(&self.config, &self.config.hosts[self.server_idx]).unwrap();
+            //let mut buf_reader = BufReader::new(reader);
+
             self.writer = writer;
-            self.server_info = try_continue!(NatsCoreConn::read_server_info(&mut buf_reader));
+            // self.server_info = try_continue!(NatsCoreConn::read_server_info(&mut buf_reader));
             try_continue!(self.connect(&mut buf_reader));
             try_continue!(self.resend_subscriptions());
             return Ok(buf_reader);
