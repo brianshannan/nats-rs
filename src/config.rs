@@ -5,7 +5,7 @@ use url::Url;
 
 #[derive(Debug)]
 pub struct Config {
-    // TODO
+    // TODO the next two
     pub verbose: bool,
     pub pedantic: bool,
     pub hosts: Vec<Url>,

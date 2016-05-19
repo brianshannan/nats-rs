@@ -32,7 +32,8 @@ use subscription::Subscription;
 use subscription::SubscriptionID;
 
 // TODO Buffer messages, need to figure out flushing
-// TODO test reconnects
+// TODO unit tests
+// TODO documentation
 // TODO another trait for message transmission?
 
 type Stream = MaybeSslStream<TcpStream>;
@@ -118,7 +119,8 @@ impl NatsConn {
         thread::spawn(move || {
             // TODO how should this error be handled?
             // this only happens if reconnect completely fails
-            NatsConn::read_loop(core_conn_clone, reader).unwrap();
+            let _ = NatsConn::read_loop(core_conn_clone, reader);
+            error!("read loop errored out");
         });
 
         Ok(conn)
@@ -150,11 +152,6 @@ impl NatsConn {
                 },
             };
         }
-    }
-
-    pub fn close(&mut self) -> Result<()> {
-        try!(self.core_conn.lock().unwrap().close());
-        Ok(())
     }
 
     pub fn publish(&mut self, subject: &str, reply: Option<&str>, data: &[u8]) -> Result<()> {
@@ -329,6 +326,7 @@ impl NatsCoreConn {
             thread::sleep(self.config.reconnect_wait);
             self.server_idx = (self.server_idx + 1) % self.config.hosts.len();
 
+            // TODO extract to function
             let stream = try_continue!(TcpStream::connect(&self.config.hosts[self.server_idx]));
             let mut buf_reader = BufReader::new(stream);
 
@@ -344,12 +342,6 @@ impl NatsCoreConn {
         }
 
         Err(Error::NoServers)
-    }
-
-    // TODO needed?
-    pub fn close(&mut self) -> Result<()> {
-        try!(self.writer.flush());
-        Ok(())
     }
 
     pub fn flush(&mut self) -> Result<()> {
@@ -410,6 +402,7 @@ impl NatsCoreConn {
 
     fn resend_subscriptions(&mut self) -> Result<()> {
         // TODO coalesce into one write
+        // TODO take into account pending auto unsubscribes
         for (sid, sub) in &self.subscriptions {
             let sub_message = format!("SUB {} {} {}\r\n", sub.subject, sub.group.as_ref().unwrap_or(&"".to_owned()), sid);
             try!(self.writer.write_all(sub_message.as_bytes()));

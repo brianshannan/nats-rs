@@ -7,7 +7,7 @@ use errors::Error;
 // TODO this whole thing is terrible
 
 #[derive(Debug)]
-pub enum NatsOp {
+enum NatsOp {
     Start,
     Plus,
 	PlusO,

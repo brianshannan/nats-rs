@@ -6,23 +6,21 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 
-use nats_client::connection;
-use nats_client::config;
-use nats_client::message::Message;
+use nats_client::NatsConn;
+use nats_client::Config;
 
 #[test]
 #[ignore]
 fn test_connect() {
-    let config = config::Config::default();
-    let mut conn = connection::NatsConn::new(config).unwrap();
-    conn.close().unwrap();
+    let config = Config::default();
+    NatsConn::new(config).unwrap();
 }
 
 #[test]
 #[ignore]
 fn test_pub_sub_channel() {
-    let config = config::Config::default();
-    let mut conn = connection::NatsConn::new(config).unwrap();
+    let config = Config::default();
+    let mut conn = NatsConn::new(config).unwrap();
     let sub = conn.subscribe_channel("topic1", None).unwrap();
     conn.publish("topic1", None, b"data").unwrap();
     conn.flush().unwrap();
@@ -30,14 +28,13 @@ fn test_pub_sub_channel() {
     thread::sleep(Duration::new(1, 0));
     assert_eq!(b"data", sub.receiver.try_recv().unwrap().data.as_slice());
     conn.unsubscribe(&sub).unwrap();
-    conn.close().unwrap();
 }
 
 #[test]
 #[ignore]
 fn test_pub_sub_callback() {
-    let config = config::Config::default();
-    let mut conn = connection::NatsConn::new(config).unwrap();
+    let config = Config::default();
+    let mut conn = NatsConn::new(config).unwrap();
 
     let num = Arc::new(Mutex::new(47));
     let num2 = num.clone();
@@ -51,13 +48,12 @@ fn test_pub_sub_callback() {
     thread::sleep(Duration::new(1, 0));
     assert_eq!(72, *num.lock().unwrap());
     conn.unsubscribe(&sub).unwrap();
-    conn.close().unwrap();
 }
 
 // #[test]
 // fn test_reconnect_needs_manual_intervention() {
-//     let config = config::Config::default();
-//     let mut conn = connection::NatsConn::new(config).unwrap();
+//     let config = Config::default();
+//     let mut conn = NatsConn::new(config).unwrap();
 //     let sub = conn.subscribe_channel("topic1", None).unwrap();
 //     conn.publish("topic1", None, b"data").unwrap();
 //     conn.flush().unwrap();
@@ -76,7 +72,6 @@ fn test_pub_sub_callback() {
 //     assert_eq!(b"data2", sub.receiver.try_recv().unwrap().data.as_slice());
 //
 //     conn.unsubscribe(&sub).unwrap();
-//     conn.close().unwrap();
 // }
 
 // use std::path::Path;
@@ -88,9 +83,9 @@ fn test_pub_sub_callback() {
 //     let mut ssl_context = SslContext::new(SslMethod::Tlsv1_2).unwrap();
 //     let path = Path::new("/home/brian/workspaces/nats-rs/tests/certs/ca.pem");
 //     ssl_context.set_CA_file(&path).unwrap();
-//     let config = config::Config {ssl_context: Some(ssl_context), ..Default::default()};
+//     let config = Config {ssl_context: Some(ssl_context), ..Default::default()};
 //
-//     let mut conn = connection::NatsConn::new(config).unwrap();
+//     let mut conn = NatsConn::new(config).unwrap();
 //     let sub = conn.subscribe_channel("topic1", None).unwrap();
 //     conn.publish("topic1", None, b"data").unwrap();
 //     conn.flush().unwrap();
@@ -98,5 +93,4 @@ fn test_pub_sub_callback() {
 //     thread::sleep(Duration::new(1, 0));
 //     assert_eq!(b"data", sub.receiver.try_recv().unwrap().data.as_slice());
 //     conn.unsubscribe(&sub).unwrap();
-//     conn.close().unwrap();
 // }
