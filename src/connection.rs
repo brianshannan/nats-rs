@@ -282,20 +282,27 @@ impl NatsCoreConn {
 
     fn send_connect(&mut self, reader: &mut BufReader<Stream>) -> Result<()> {
         let host = &self.config.hosts[self.server_idx];
-        let username = {
-            if host.username().len() > 0 {
-                Some(host.username().to_owned())
-            } else {
-                None
+        let (user, pass, auth_token) = {
+            let username = {
+                if host.username().len() > 0 {
+                    Some(host.username().to_owned())
+                } else {
+                    None
+                }
+            };
+            // No password means the username should be the auth token
+            match host.password() {
+                Some(pass) => (username, Some(pass.to_owned()), None),
+                None => (None, None, username),
             }
         };
 
         let conn_info = NatsConnInfo {
             verbose: self.config.verbose,
             pedantic: self.config.pedantic,
-            user: username,
-            pass: host.password().map(|s| s.to_owned()),
-            auth_token: None,
+            user: user,
+            pass: pass,
+            auth_token: auth_token,
             ssl_required: self.config.ssl_context.is_some(),
             name: "TODO".to_owned(),
             lang: "rust".to_owned(),
