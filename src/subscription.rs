@@ -41,9 +41,10 @@ pub fn new_channel_subscription(id: u64, subject: String, group: Option<String>)
     (send_sub, recv_sub)
 }
 
+/// A subscription where messages can be received over a channel
 #[derive(Debug)]
 pub struct ChannelSubscription {
-    pub id: u64,
+    id: u64,
     pub receiver: mpsc::Receiver<Message>,
 }
 
@@ -81,9 +82,11 @@ pub fn new_async_subscription<F>(id: u64, subject: String, group: Option<String>
     (send_sub, recv_sub)
 }
 
+/// A subscription where a callback is executed with each message
+/// received from the server.
 #[derive(Debug)]
 pub struct AsyncSubscription {
-    pub id: u64,
+    id: u64,
 }
 
 impl SubscriptionID for AsyncSubscription {

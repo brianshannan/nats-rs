@@ -34,6 +34,7 @@ use subscription::SubscriptionID;
 // TODO Buffer messages, need to figure out flushing
 // TODO unit tests
 // TODO documentation
+// TODO get debug to work?
 // TODO another trait for message transmission?
 
 type Stream = MaybeSslStream<TcpStream>;
@@ -46,6 +47,7 @@ pub trait MessageProcessor {
     fn process_message(&mut self, args: &MessageArg, message: &[u8]);
 }
 
+/// NatsConn provides an interface for communicating with a Nats server.
 // #[derive(Debug)]
 pub struct NatsConn {
     core_conn: Arc<Mutex<NatsCoreConn>>,
@@ -102,6 +104,7 @@ macro_rules! try_continue {
 }
 
 impl NatsConn {
+    /// Constructs a new NatsConn using the options in the provide Config struct
     pub fn new(mut config: Config) -> Result<NatsConn> {
         let mut rng = thread_rng();
         if config.shuffle_hosts {
@@ -126,6 +129,7 @@ impl NatsConn {
         Ok(conn)
     }
 
+    /// Reads data sent from the server
     fn read_loop(core_conn: Arc<Mutex<NatsCoreConn>>, mut reader: BufReader<Stream>) -> Result<()> {
         let mut parser = Parser::new();
         // TODO use a different size?
@@ -154,18 +158,22 @@ impl NatsConn {
         }
     }
 
+    /// Publishes a message on the given subject.
     pub fn publish(&mut self, subject: &str, reply: Option<&str>, data: &[u8]) -> Result<()> {
         self.core_conn.lock().unwrap().publish(subject, reply, data)
     }
 
-    pub fn publish_message(&mut self, message: Message) -> Result<()> {
+    /// Publishes a message on the given subject.
+    pub fn publish_message(&mut self, message: &Message) -> Result<()> {
         self.core_conn.lock().unwrap().publish(&message.subject, message.reply.as_ref().map(|s| s.as_str()), &message.data)
     }
 
+    /// Constructs a unique string for use as a reply subject.
     fn new_inbox(&mut self) -> String {
         "_INBOX.".to_owned() + self.rng.gen_ascii_chars().take(22).collect::<String>().as_str()
     }
 
+    /// Publishes a message on the given subject as waits for a response.
     pub fn request(&mut self, subject: &str, data: &[u8]) -> Result<Message> {
         let inbox = self.new_inbox();
         let sub = try!(self.subscribe_channel(subject, None));
@@ -176,6 +184,7 @@ impl NatsConn {
         Ok(try!(sub.receiver.recv()))
     }
 
+    /// Subscribes to a subject, placing received messages into a channel
     pub fn subscribe_channel(&mut self, subject: &str, group: Option<&str>) -> Result<ChannelSubscription> {
         let sid = self.next_sid;
         self.next_sid += 1;
@@ -184,6 +193,7 @@ impl NatsConn {
         Ok(recv_sub)
     }
 
+    /// Subscribes to a subject, executing the provided callback with received messages.
     pub fn subscribe_async<F>(&mut self, subject: &str, group: Option<&str>, callback: F) -> Result<AsyncSubscription> where F: Fn(Message) + Send + 'static{
         let sid = self.next_sid;
         self.next_sid += 1;
@@ -192,14 +202,17 @@ impl NatsConn {
         Ok(recv_sub)
     }
 
+    /// Unsubscribes from the given subscription.
     pub fn unsubscribe<S: SubscriptionID>(&mut self, subscription: &S) -> Result<()> {
         self.core_conn.lock().unwrap().unsubscribe(subscription, None)
     }
 
+    /// Automatically unsubscribe after the given number of messages are received on the subscription.
     pub fn auto_unsubscribe<S: SubscriptionID>(&mut self, subscription: &S, max: usize) -> Result<()> {
         self.core_conn.lock().unwrap().unsubscribe(subscription, Some(max))
     }
 
+    /// Flushes any pending data
     pub fn flush(&mut self) -> Result<()> {
         self.core_conn.lock().unwrap().flush()
     }

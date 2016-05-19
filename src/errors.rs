@@ -9,6 +9,7 @@ use rustc_serialize::json;
 use message::Message;
 
 // TODO make this smaller?
+/// An error that occurs during the operation of the Nats client.
 #[derive(Debug)]
 pub enum Error {
     NoServers,
