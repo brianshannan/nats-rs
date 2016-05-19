@@ -16,7 +16,6 @@ use rand::ThreadRng;
 use openssl::ssl::MaybeSslStream;
 use openssl::ssl::SslStream;
 use rustc_serialize::json;
-use url::Url;
 
 use Result;
 use config::Config;
@@ -32,7 +31,6 @@ use subscription::DispatchMessage;
 use subscription::Subscription;
 use subscription::SubscriptionID;
 
-// TODO TLS
 // TODO Buffer messages, need to figure out flushing
 // TODO test reconnects
 // TODO another trait for message transmission?
@@ -86,7 +84,7 @@ struct NatsServerInfo {
     pub port: usize,
     pub version: String,
     pub auth_required: bool,
-    pub tls_required: bool,
+    pub ssl_required: bool,
     pub max_payload: u64,
 }
 
@@ -215,7 +213,7 @@ impl NatsCoreConn {
         let (server_idx, stream) = try!(NatsCoreConn::create_stream(&config));
         let mut buf_reader = BufReader::new(stream);
 
-        let server_info = try!(NatsCoreConn::read_server_info(&mut buf_reader));
+        let server_info = try!(NatsCoreConn::read_server_info(&config, &mut buf_reader));
 
         let (reader, writer) = try!(NatsCoreConn::tcp_to_ssl(&config, buf_reader.into_inner()));
         let mut buf_reader = BufReader::new(reader);
@@ -250,13 +248,21 @@ impl NatsCoreConn {
         Ok((ssl_writer, ssl_reader))
     }
 
-    fn read_server_info(reader: &mut BufReader<TcpStream>) -> Result<NatsServerInfo> {
+    fn read_server_info(config: &Config, reader: &mut BufReader<TcpStream>) -> Result<NatsServerInfo> {
         let mut s = "".to_owned();
         try!(reader.read_line(&mut s));
         if s.len() < 5 || &s[..5] != "INFO " {
             return Err(Error::ParseError)
         }
         let server_info: NatsServerInfo = try!(json::decode(&s[5..]));
+
+        // Check ssl requirements
+        match (config.ssl_context.is_some(), server_info.ssl_required) {
+            (true, false) => return Err(Error::SslConnectionRequested),
+            (false, true) => return Err(Error::SslConnectionRequired),
+            _ => {},
+        };
+
         Ok(server_info)
     }
 
@@ -279,7 +285,7 @@ impl NatsCoreConn {
                 user: username,
                 pass: host.password().map(|s| s.to_owned()),
                 auth_token: None,
-                ssl_required: false,
+                ssl_required: self.config.ssl_context.is_some(),
                 name: "TODO".to_owned(),
                 lang: "rust".to_owned(),
                 version: "0.1.0".to_owned(),
@@ -323,20 +329,15 @@ impl NatsCoreConn {
             thread::sleep(self.config.reconnect_wait);
             self.server_idx = (self.server_idx + 1) % self.config.hosts.len();
 
-            // let (server_idx, stream) = try!(NatsCoreConn::create_stream(&config));
             let stream = try_continue!(TcpStream::connect(&self.config.hosts[self.server_idx]));
             let mut buf_reader = BufReader::new(stream);
 
-            self.server_info = try_continue!(NatsCoreConn::read_server_info(&mut buf_reader));
+            self.server_info = try_continue!(NatsCoreConn::read_server_info(&self.config, &mut buf_reader));
 
             let (reader, writer) = try_continue!(NatsCoreConn::tcp_to_ssl(&self.config, buf_reader.into_inner()));
             let mut buf_reader = BufReader::new(reader);
 
-            //let (writer, reader) = NatsCoreConn::create_ssl_stream(&self.config, &self.config.hosts[self.server_idx]).unwrap();
-            //let mut buf_reader = BufReader::new(reader);
-
             self.writer = writer;
-            // self.server_info = try_continue!(NatsCoreConn::read_server_info(&mut buf_reader));
             try_continue!(self.connect(&mut buf_reader));
             try_continue!(self.resend_subscriptions());
             return Ok(buf_reader);

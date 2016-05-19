@@ -83,6 +83,7 @@ fn test_pub_sub_callback() {
 // use openssl::ssl::SslContext;
 // use openssl::ssl::SslMethod;
 // #[test]
+// #[ignore]
 // fn test_ssl() {
 //     let mut ssl_context = SslContext::new(SslMethod::Tlsv1_2).unwrap();
 //     let path = Path::new("/home/brian/workspaces/nats-rs/tests/certs/ca.pem");

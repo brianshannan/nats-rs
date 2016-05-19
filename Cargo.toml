@@ -5,7 +5,6 @@ authors = ["Brian Shannan <brianshannan@gmail.com>"]
 
 [dependencies]
 log = "0.3"
-# openssl = "0.7.12"
 rand = "*"
 rustc-serialize = "0.3"
 url = "1.1.0"
