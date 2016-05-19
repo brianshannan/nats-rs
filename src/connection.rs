@@ -265,43 +265,7 @@ impl NatsCoreConn {
 
     // Protocol is "CONNECT <json options>"
     fn connect(&mut self, reader: &mut BufReader<Stream>) -> Result<()> {
-        // TODO this method is now a mess
-        {
-            let host = &self.config.hosts[self.server_idx];
-            let username = {
-                if host.username().len() > 0 {
-                    Some(host.username().to_owned())
-                } else {
-                    None
-                }
-            };
-
-            let conn_info = NatsConnInfo {
-                verbose: self.config.verbose,
-                pedantic: self.config.pedantic,
-                user: username,
-                pass: host.password().map(|s| s.to_owned()),
-                auth_token: None,
-                ssl_required: self.config.ssl_context.is_some(),
-                name: "TODO".to_owned(),
-                lang: "rust".to_owned(),
-                version: "0.1.0".to_owned(),
-            };
-
-            // TODO set read timeouts?
-            let conn_message = format!("CONNECT {}\r\n", try!(json::encode(&conn_info)));
-            try!(self.writer.write_all(conn_message.as_bytes()));
-            try!(self.writer.flush());
-
-            // TODO fix
-            if self.config.verbose {
-                let mut response = "".to_string();
-                try!(reader.read_line(&mut response));
-                if response != "+OK\r\n" {
-                    return Err(Error::ParseError);
-                }
-            }
-        }
+        try!(self.send_connect(reader));
 
         // send a ping message and expect a PONG
         try!(self.ping());
@@ -314,6 +278,45 @@ impl NatsCoreConn {
         }
 
         return Ok(());
+    }
+
+    fn send_connect(&mut self, reader: &mut BufReader<Stream>) -> Result<()> {
+        let host = &self.config.hosts[self.server_idx];
+        let username = {
+            if host.username().len() > 0 {
+                Some(host.username().to_owned())
+            } else {
+                None
+            }
+        };
+
+        let conn_info = NatsConnInfo {
+            verbose: self.config.verbose,
+            pedantic: self.config.pedantic,
+            user: username,
+            pass: host.password().map(|s| s.to_owned()),
+            auth_token: None,
+            ssl_required: self.config.ssl_context.is_some(),
+            name: "TODO".to_owned(),
+            lang: "rust".to_owned(),
+            version: "0.1.0".to_owned(),
+        };
+
+        // TODO set read timeouts?
+        let conn_message = format!("CONNECT {}\r\n", try!(json::encode(&conn_info)));
+        try!(self.writer.write_all(conn_message.as_bytes()));
+        try!(self.writer.flush());
+
+        // TODO fix
+        if self.config.verbose {
+            let mut response = "".to_owned();
+            try!(reader.read_line(&mut response));
+            if response != "+OK\r\n" {
+                return Err(Error::ParseError);
+            }
+        }
+
+        Ok(())
     }
 
     pub fn reconnect(&mut self) -> Result<(BufReader<Stream>)> {
@@ -402,10 +405,14 @@ impl NatsCoreConn {
 
     fn resend_subscriptions(&mut self) -> Result<()> {
         // TODO coalesce into one write
-        // TODO take into account pending auto unsubscribes
         for (sid, sub) in &self.subscriptions {
             let sub_message = format!("SUB {} {} {}\r\n", sub.subject, sub.group.as_ref().unwrap_or(&"".to_owned()), sid);
             try!(self.writer.write_all(sub_message.as_bytes()));
+
+            if let Some(max) = sub.max {
+                let unsub_message = format!("UNSUB {} {}\r\n", sub.id, max - sub.delivered);
+                try!(self.writer.write_all(unsub_message.as_bytes()));
+            }
         }
         Ok(())
     }
@@ -425,9 +432,28 @@ impl NatsCoreConn {
             },
         };
 
-        let unsub_message = format!("UNSUB {} {}", subscription.sub_id(), max_str);
+        let unsub_message = format!("UNSUB {} {}\r\n", subscription.sub_id(), max_str);
         try!(self.writer.write_all(unsub_message.as_bytes()));
         Ok(())
+    }
+
+    fn dispatch_message(&mut self, args: &MessageArg, message: &[u8]) -> Option<(Option<usize>, usize)> {
+        // TODO errors
+        let sub = self.subscriptions.get_mut(&args.sid);
+        if let Some(s) = sub {
+            s.delivered += 1;
+            let mut data = Vec::with_capacity(message.len());
+            data.extend_from_slice(message);
+            let m = Message {
+                subject: str::from_utf8(&args.subject).unwrap().to_owned(),
+                reply: args.reply.as_ref().map(|s| str::from_utf8(s).unwrap().to_owned()),
+                data: data,
+            };
+            (*s.dispatcher).dispatch_message(m).unwrap();
+            return Some((s.max, s.delivered));
+        }
+
+        None
     }
 }
 
@@ -449,34 +475,11 @@ impl MessageProcessor for NatsCoreConn {
     }
 
     fn process_message(&mut self, args: &MessageArg, message: &[u8]) {
-        // TODO this is REALLY ugly
-        let max: Option<usize>;
-        let delivered: usize;
-
-        {
-            let sub = self.subscriptions.get_mut(&args.sid);
-            if sub.is_none() {
-                return;
-            }
-            let mut s = sub.unwrap();
-            s.delivered += 1;
-            max = s.max;
-            delivered = s.delivered;
-
-            let mut data = Vec::with_capacity(message.len());
-            data.extend_from_slice(message);
-            let m = Message {
-                subject: str::from_utf8(&args.subject).unwrap().to_owned(),
-                reply: args.reply.as_ref().map(|s| str::from_utf8(s).unwrap().to_owned()),
-                data: data,
-            };
-            // TODO error
-            (*s.dispatcher).dispatch_message(m).unwrap();
-        }
-
-        if let Some(m) = max {
-            if delivered >= m {
-                self.subscriptions.remove(&args.sid);
+        if let Some((max, delivered)) = self.dispatch_message(args, message) {
+            if let Some(m) = max {
+                if delivered >= m {
+                    self.subscriptions.remove(&args.sid);
+                }
             }
         }
     }
