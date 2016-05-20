@@ -37,7 +37,7 @@ use subscription::SubscriptionID;
 // TODO get debug to work?
 // TODO another trait for message transmission?
 
-type Stream = MaybeSslStream<TcpStream>;
+pub type Stream = MaybeSslStream<TcpStream>;
 
 pub trait MessageProcessor {
     fn process_ok(&mut self);
@@ -50,16 +50,16 @@ pub trait MessageProcessor {
 /// NatsConn provides an interface for communicating with a Nats server.
 // #[derive(Debug)]
 pub struct NatsConn {
-    core_conn: Arc<Mutex<NatsCoreConn>>,
+    core_conn: Arc<Mutex<NatsCoreConn<Stream>>>,
     next_sid: u64,
     rng: ThreadRng,
 }
 
 // #[derive(Debug)]
-struct NatsCoreConn {
+pub struct NatsCoreConn<W: Write> {
     // writer: BufWriter<TcpStream>,
     config: Config,
-    writer: Stream,
+    writer: W,
     subscriptions: HashMap<u64, Subscription>,
     server_info: NatsServerInfo,
     server_idx: usize,
@@ -68,7 +68,7 @@ struct NatsCoreConn {
 // TODO the String fields could be &str, but the
 // serialization macros don't like it
 #[derive(Debug, RustcDecodable, RustcEncodable)]
-struct NatsConnInfo {
+pub struct NatsConnInfo {
     pub verbose: bool,
     pub pedantic: bool,
     pub user: Option<String>,
@@ -81,7 +81,7 @@ struct NatsConnInfo {
 }
 
 #[derive(Debug, RustcDecodable, RustcEncodable)]
-struct NatsServerInfo {
+pub struct NatsServerInfo {
     pub server_id: String,
     pub host: String,
     pub port: usize,
@@ -130,7 +130,7 @@ impl NatsConn {
     }
 
     /// Reads data sent from the server
-    fn read_loop(core_conn: Arc<Mutex<NatsCoreConn>>, mut reader: BufReader<Stream>) -> Result<()> {
+    fn read_loop(core_conn: Arc<Mutex<NatsCoreConn<Stream>>>, mut reader: BufReader<Stream>) -> Result<()> {
         let mut parser = Parser::new();
         // TODO use a different size?
         // TODO need to disconnect socket before trying to reconnect?
@@ -218,8 +218,8 @@ impl NatsConn {
     }
 }
 
-impl NatsCoreConn {
-    pub fn new(config: Config) -> Result<(BufReader<Stream>, NatsCoreConn)> {
+impl NatsCoreConn<Stream> {
+    pub fn new(config: Config) -> Result<(BufReader<Stream>, NatsCoreConn<Stream>)> {
         let (server_idx, stream) = try!(NatsCoreConn::create_stream(&config));
         let mut buf_reader = BufReader::new(stream);
 
@@ -276,9 +276,49 @@ impl NatsCoreConn {
         Ok(server_info)
     }
 
+    pub fn reconnect(&mut self) -> Result<(BufReader<Stream>)> {
+        if !self.config.allow_reconnect {
+            // TODO right error
+            return Err(Error::NoServers);
+        }
+
+        for _ in 0..self.config.max_reconnects {
+            thread::sleep(self.config.reconnect_wait);
+            self.server_idx = (self.server_idx + 1) % self.config.hosts.len();
+
+            // TODO extract to function and get this moved to the generic impl?
+            let stream = try_continue!(TcpStream::connect(&self.config.hosts[self.server_idx]));
+            let mut buf_reader = BufReader::new(stream);
+
+            self.server_info = try_continue!(NatsCoreConn::read_server_info(&self.config, &mut buf_reader));
+
+            let (reader, writer) = try_continue!(NatsCoreConn::tcp_to_ssl(&self.config, buf_reader.into_inner()));
+            let mut buf_reader = BufReader::new(reader);
+
+            self.writer = writer;
+            try_continue!(self.connect(&mut buf_reader));
+            try_continue!(self.resend_subscriptions());
+            return Ok(buf_reader);
+        }
+
+        Err(Error::NoServers)
+    }
+}
+
+impl<W: Write> NatsCoreConn<W> {
+
     // Protocol is "CONNECT <json options>"
     fn connect(&mut self, reader: &mut BufReader<Stream>) -> Result<()> {
-        try!(self.send_connect(reader));
+        try!(self.send_connect());
+
+        // TODO fix
+        if self.config.verbose {
+            let mut response = "".to_owned();
+            try!(reader.read_line(&mut response));
+            if response != "+OK\r\n" {
+                return Err(Error::ParseError);
+            }
+        }
 
         // send a ping message and expect a PONG
         try!(self.ping());
@@ -293,7 +333,7 @@ impl NatsCoreConn {
         return Ok(());
     }
 
-    fn send_connect(&mut self, reader: &mut BufReader<Stream>) -> Result<()> {
+    fn send_connect(&mut self) -> Result<()> {
         let host = &self.config.hosts[self.server_idx];
         let (user, pass, auth_token) = {
             let username = {
@@ -327,44 +367,7 @@ impl NatsCoreConn {
         try!(self.writer.write_all(conn_message.as_bytes()));
         try!(self.writer.flush());
 
-        // TODO fix
-        if self.config.verbose {
-            let mut response = "".to_owned();
-            try!(reader.read_line(&mut response));
-            if response != "+OK\r\n" {
-                return Err(Error::ParseError);
-            }
-        }
-
         Ok(())
-    }
-
-    pub fn reconnect(&mut self) -> Result<(BufReader<Stream>)> {
-        if !self.config.allow_reconnect {
-            // TODO right error
-            return Err(Error::NoServers);
-        }
-
-        for _ in 0..self.config.max_reconnects {
-            thread::sleep(self.config.reconnect_wait);
-            self.server_idx = (self.server_idx + 1) % self.config.hosts.len();
-
-            // TODO extract to function
-            let stream = try_continue!(TcpStream::connect(&self.config.hosts[self.server_idx]));
-            let mut buf_reader = BufReader::new(stream);
-
-            self.server_info = try_continue!(NatsCoreConn::read_server_info(&self.config, &mut buf_reader));
-
-            let (reader, writer) = try_continue!(NatsCoreConn::tcp_to_ssl(&self.config, buf_reader.into_inner()));
-            let mut buf_reader = BufReader::new(reader);
-
-            self.writer = writer;
-            try_continue!(self.connect(&mut buf_reader));
-            try_continue!(self.resend_subscriptions());
-            return Ok(buf_reader);
-        }
-
-        Err(Error::NoServers)
     }
 
     pub fn flush(&mut self) -> Result<()> {
@@ -477,9 +480,8 @@ impl NatsCoreConn {
     }
 }
 
-impl MessageProcessor for NatsCoreConn {
-    fn process_ok(&mut self) {
-    }
+impl<W: Write> MessageProcessor for NatsCoreConn<W> {
+    fn process_ok(&mut self) {}
 
     fn process_err(&mut self, message: &[u8]) {
         error!("received error from server, closing connection: {}", str::from_utf8(message).unwrap());
@@ -502,5 +504,211 @@ impl MessageProcessor for NatsCoreConn {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use config::Config;
+    use subscription::new_channel_subscription;
+    use rustc_serialize::json;
+    use url::Url;
+    use std::collections::HashMap;
+    use std::str;
+    use openssl::ssl::SslContext;
+    use openssl::ssl::SslMethod;
+
+    fn default_core_conn() -> NatsCoreConn<Vec<u8>> {
+        NatsCoreConn {
+            config: Config::default(),
+            writer: Vec::<u8>::new(),
+            subscriptions: HashMap::new(),
+            server_info: NatsServerInfo {
+                server_id: "server_id".to_owned(),
+                host: "some host".to_owned(),
+                port: 0,
+                version: "1".to_owned(),
+                auth_required: false,
+                ssl_required: false,
+                max_payload: 100000,
+            },
+            server_idx: 0,
+        }
+    }
+
+    #[test]
+    fn test_subscribe_no_group() {
+        let mut conn = default_core_conn();
+        let (sub1, _) = new_channel_subscription(41, "topic1".to_owned(), None);
+        conn.subscribe(sub1).unwrap();
+        assert_eq!("SUB topic1  41\r\n", str::from_utf8(&conn.writer).unwrap());
+        assert_eq!(1, conn.subscriptions.len());
+        let s = conn.subscriptions.get(&41).unwrap();
+        assert_eq!(41, s.id);
+        assert_eq!("topic1".to_owned(), s.subject);
+        assert_eq!(None, s.group);
+    }
+
+    #[test]
+    fn test_subscribe_queue_group() {
+        let mut conn = default_core_conn();
+        let (sub1, _) = new_channel_subscription(924, "topic2".to_owned(), Some("a_queue_group".to_owned()));
+        conn.subscribe(sub1).unwrap();
+        assert_eq!("SUB topic2 a_queue_group 924\r\n", str::from_utf8(&conn.writer).unwrap());
+        assert_eq!(1, conn.subscriptions.len());
+        let s = conn.subscriptions.get(&924).unwrap();
+        assert_eq!(924, s.id);
+        assert_eq!("topic2".to_owned(), s.subject);
+        assert_eq!(Some("a_queue_group".to_owned()), s.group);
+    }
+
+    #[test]
+    fn test_unsubscribe_now() {
+        let mut conn = default_core_conn();
+        let (send_sub1, recv_sub1) = new_channel_subscription(41, "topic1".to_owned(), None);
+        conn.subscribe(send_sub1).unwrap();
+        let (send_sub2, _) = new_channel_subscription(924, "topic2".to_owned(), None);
+        conn.subscribe(send_sub2).unwrap();
+        assert_eq!(2, conn.subscriptions.len());
+        conn.writer.clear();
+        conn.unsubscribe(&recv_sub1, None).unwrap();
+        assert_eq!("UNSUB 41 \r\n", str::from_utf8(&conn.writer).unwrap());
+        assert_eq!(1, conn.subscriptions.len());
+        conn.subscriptions.get(&924).unwrap();
+    }
+
+    #[test]
+    fn test_unsubscribe_auto() {
+        let mut conn = default_core_conn();
+        let (send_sub1, recv_sub1) = new_channel_subscription(41, "topic1".to_owned(), None);
+        conn.subscribe(send_sub1).unwrap();
+        let (send_sub2, _) = new_channel_subscription(924, "topic2".to_owned(), None);
+        conn.subscribe(send_sub2).unwrap();
+        assert_eq!(2, conn.subscriptions.len());
+        conn.writer.clear();
+        conn.unsubscribe(&recv_sub1, Some(7)).unwrap();
+        assert_eq!("UNSUB 41 7\r\n", str::from_utf8(&conn.writer).unwrap());
+        assert_eq!(2, conn.subscriptions.len());
+        let s = conn.subscriptions.get(&41).unwrap();
+        assert_eq!("topic1".to_owned(), s.subject);
+        assert_eq!(7, s.max.unwrap());
+    }
+
+    #[test]
+    fn test_publish_no_reply() {
+        let mut conn = default_core_conn();
+        let message = "some data I am typing";
+        conn.publish("topic1", None, message.as_bytes()).unwrap();
+        let expected = format!("PUB topic1 {}\r\n{}\r\n", message.len(), message);
+        assert_eq!(expected, str::from_utf8(&conn.writer).unwrap());
+    }
+
+    #[test]
+    fn test_publish_with_reply() {
+        let mut conn = default_core_conn();
+        let message = "some data I am typing";
+        conn.publish("topic1", Some("reply_topic"), message.as_bytes()).unwrap();
+        let expected = format!("PUB topic1 reply_topic {}\r\n{}\r\n", message.len(), message);
+        assert_eq!(expected, str::from_utf8(&conn.writer).unwrap());
+    }
+
+    #[test]
+    fn test_resend_subscriptions_non_auto() {
+        let mut conn = default_core_conn();
+        let (send_sub1, _) = new_channel_subscription(41, "topic1".to_owned(), Some("group1".to_owned()));
+        conn.subscribe(send_sub1).unwrap();
+        conn.writer.clear();
+        conn.resend_subscriptions().unwrap();
+        assert_eq!("SUB topic1 group1 41\r\n", str::from_utf8(&conn.writer).unwrap());
+    }
+
+    #[test]
+    fn test_resend_subscriptions_auto_unsubscribe() {
+        let mut conn = default_core_conn();
+        let (send_sub1, recv_sub1) = new_channel_subscription(41, "topic1".to_owned(), None);
+        conn.subscribe(send_sub1).unwrap();
+        conn.unsubscribe(&recv_sub1, Some(7)).unwrap();
+        conn.subscriptions.get_mut(&41).unwrap().delivered = 2;
+        conn.writer.clear();
+        conn.resend_subscriptions().unwrap();
+        let first = "SUB topic1  41\r\n";
+        let second = "UNSUB 41 5\r\n";
+        let expected = format!("{}{}", first, second);
+        assert_eq!(expected, str::from_utf8(&conn.writer).unwrap());
+    }
+
+    #[test]
+    fn test_ping() {
+        let mut conn = default_core_conn();
+        conn.ping().unwrap();
+        assert_eq!("PING\r\n", str::from_utf8(&conn.writer).unwrap());
+    }
+
+    #[test]
+    fn test_pong() {
+        let mut conn = default_core_conn();
+        conn.pong().unwrap();
+        assert_eq!("PONG\r\n", str::from_utf8(&conn.writer).unwrap());
+    }
+
+    #[test]
+    fn test_connect() {
+        let mut conn = default_core_conn();
+        conn.send_connect().unwrap();
+        let s = str::from_utf8(&conn.writer).unwrap();
+        assert_eq!("CONNECT ", &s[..8]);
+        let conn_info: NatsConnInfo = json::decode(&s[8..]).unwrap();
+        assert!(!conn_info.verbose);
+        assert!(!conn_info.pedantic);
+        assert!(conn_info.user.is_none());
+        assert!(conn_info.pass.is_none());
+        assert!(conn_info.auth_token.is_none());
+        assert!(!conn_info.ssl_required);
+    }
+
+    #[test]
+    fn test_connect_user_pass() {
+        let mut conn = default_core_conn();
+        let u = Url::parse("nats://brian:my_pass@localhost:4222").unwrap();
+        conn.config.hosts.clear();
+        conn.config.hosts.push(u);
+        conn.send_connect().unwrap();
+        let s = str::from_utf8(&conn.writer).unwrap();
+        assert_eq!("CONNECT ", &s[..8]);
+        let conn_info: NatsConnInfo = json::decode(&s[8..]).unwrap();
+        assert_eq!(Some("brian".to_owned()), conn_info.user);
+        assert_eq!(Some("my_pass".to_owned()), conn_info.pass);
+        assert!(conn_info.auth_token.is_none());
+    }
+
+    #[test]
+    fn test_connect_auth_token() {
+        let mut conn = default_core_conn();
+        let u = Url::parse("nats://secret_token@localhost:4222").unwrap();
+        conn.config.hosts.clear();
+        conn.config.hosts.push(u);
+        conn.send_connect().unwrap();
+        let s = str::from_utf8(&conn.writer).unwrap();
+        assert_eq!("CONNECT ", &s[..8]);
+        let conn_info: NatsConnInfo = json::decode(&s[8..]).unwrap();
+        assert!(conn_info.user.is_none());
+        assert!(conn_info.pass.is_none());
+        assert_eq!(Some("secret_token".to_owned()), conn_info.auth_token);
+    }
+
+    #[test]
+    fn test_various_options() {
+        let mut conn = default_core_conn();
+        conn.config.verbose = true;
+        conn.config.pedantic = true;
+        conn.config.ssl_context = Some(SslContext::new(SslMethod::Tlsv1_2).unwrap());
+        conn.send_connect().unwrap();
+        let s = str::from_utf8(&conn.writer).unwrap();
+        assert_eq!("CONNECT ", &s[..8]);
+        let conn_info: NatsConnInfo = json::decode(&s[8..]).unwrap();
+        assert!(conn_info.verbose);
+        assert!(conn_info.pedantic);
+        assert!(conn_info.ssl_required);
     }
 }
