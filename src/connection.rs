@@ -57,7 +57,6 @@ pub struct NatsConn {
 
 // #[derive(Debug)]
 pub struct NatsCoreConn<W: Write> {
-    // writer: BufWriter<TcpStream>,
     config: Config,
     writer: W,
     subscriptions: HashMap<u64, Subscription>,
@@ -472,7 +471,7 @@ impl<W: Write> NatsCoreConn<W> {
                 reply: args.reply.as_ref().map(|s| str::from_utf8(s).unwrap().to_owned()),
                 data: data,
             };
-            (*s.dispatcher).dispatch_message(m).unwrap();
+            s.dispatcher.dispatch_message(m).unwrap();
             return Some((s.max, s.delivered));
         }
 

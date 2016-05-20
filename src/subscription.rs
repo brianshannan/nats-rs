@@ -11,6 +11,20 @@ pub trait SubscriptionID {
     fn sub_id(&self) -> u64;
 }
 
+pub enum MessageDispatcher {
+    Async(SendAsyncSubscription),
+    Channel(SendChannelSubscription),
+}
+
+impl DispatchMessage for MessageDispatcher {
+    fn dispatch_message(&self, message: Message) -> Result<()> {
+        match *self {
+            MessageDispatcher::Async(ref sub) => sub.dispatch_message(message),
+            MessageDispatcher::Channel(ref sub) => sub.dispatch_message(message),
+        }
+    }
+}
+
 // #[derive(Debug)]
 pub struct Subscription {
     pub id: u64,
@@ -18,7 +32,7 @@ pub struct Subscription {
     pub group: Option<String>,
     pub delivered: usize,
     pub max: Option<usize>,
-    pub dispatcher: Box<DispatchMessage + Send>,
+    pub dispatcher: MessageDispatcher,
 }
 
 pub fn new_channel_subscription(id: u64, subject: String, group: Option<String>) -> (Subscription, ChannelSubscription) {
@@ -30,9 +44,11 @@ pub fn new_channel_subscription(id: u64, subject: String, group: Option<String>)
         group: group,
         delivered: 0,
         max: None,
-        dispatcher: Box::new(SendChannelSubscription {
-            sender: sender
-        }),
+        dispatcher: MessageDispatcher::Channel(
+            SendChannelSubscription {
+                sender: sender
+            }
+        ),
     };
     let recv_sub = ChannelSubscription {
         id: id,
@@ -72,9 +88,11 @@ pub fn new_async_subscription<F>(id: u64, subject: String, group: Option<String>
         group: group,
         delivered: 0,
         max: None,
-        dispatcher: Box::new(SendAsyncSubscription {
-            callback: callback,
-        }),
+        dispatcher: MessageDispatcher::Async(
+            SendAsyncSubscription {
+                callback: Box::new(callback),
+            }
+        ),
     };
     let recv_sub = AsyncSubscription {
         id: id,
@@ -95,12 +113,12 @@ impl SubscriptionID for AsyncSubscription {
     }
 }
 
-#[derive(Debug)]
-pub struct SendAsyncSubscription<F: Fn(Message) + Send> {
-    pub callback: F,
+// #[derive(Debug)]
+pub struct SendAsyncSubscription {
+    pub callback: Box<Fn(Message) + Send>,
 }
 
-impl<F: Fn(Message) + Send> DispatchMessage for SendAsyncSubscription<F> {
+impl DispatchMessage for SendAsyncSubscription {
     fn dispatch_message(&self, message: Message) -> Result<()> {
         // TODO error return value?
         // TODO execute in a different thread?
