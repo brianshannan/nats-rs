@@ -460,18 +460,19 @@ impl<W: Write> NatsCoreConn<W> {
     }
 
     fn dispatch_message(&mut self, args: &MessageArg, message: &[u8]) -> Option<(Option<usize>, usize)> {
-        // TODO errors
+        // TODO is this how errors here should be handled?
         let sub = self.subscriptions.get_mut(&args.sid);
         if let Some(s) = sub {
             s.delivered += 1;
             let mut data = Vec::with_capacity(message.len());
             data.extend_from_slice(message);
             let m = Message {
-                subject: str::from_utf8(&args.subject).unwrap().to_owned(),
-                reply: args.reply.as_ref().map(|s| str::from_utf8(s).unwrap().to_owned()),
+                subject: String::from_utf8_lossy(&args.subject).into_owned(),
+                reply: args.reply.as_ref().map(|s| String::from_utf8_lossy(s).into_owned()),
                 data: data,
             };
-            s.dispatcher.dispatch_message(m).unwrap();
+            error!("message could not be delivered to subscriber");
+            let _ = s.dispatcher.dispatch_message(m);
             return Some((s.max, s.delivered));
         }
 
