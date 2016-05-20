@@ -28,6 +28,10 @@ fn test_pub_sub_channel() {
     thread::sleep(Duration::new(1, 0));
     assert_eq!(b"data", sub.receiver.try_recv().unwrap().data.as_slice());
     conn.unsubscribe(&sub).unwrap();
+
+    conn.publish("topic1", None, b"data").unwrap();
+    thread::sleep(Duration::new(1, 0));
+    assert!(sub.receiver.try_recv().is_err());
 }
 
 #[test]

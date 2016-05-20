@@ -446,7 +446,7 @@ impl<W: Write> NatsCoreConn<W> {
             Some(n) => {
                 max_str = format!("{}", n);
                 if let Some(sub) = self.subscriptions.get_mut(&subscription.sub_id()) {
-                    (*sub).max = max;
+                    sub.max = max;
                 }
             },
             None => {
