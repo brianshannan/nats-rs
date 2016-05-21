@@ -1,3 +1,5 @@
+#![allow(unused_variables)]
+
 #[macro_use]
 extern crate lazy_static;
 extern crate nats_client;
@@ -16,6 +18,11 @@ use openssl::ssl::SslMethod;
 
 use nats_client::NatsConn;
 use nats_client::Config;
+
+/// General strategy:
+/// Grab lock to make sure only one test can run at a time
+/// Start nats server and interact with it
+/// TODO start gnatsd on unique port so lock isn't needed
 
 lazy_static! {
     static ref LOCK: Arc<Mutex<()>> = Arc::new(Mutex::new(()));
