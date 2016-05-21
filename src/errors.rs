@@ -5,6 +5,7 @@ use std::sync::mpsc;
 
 use openssl::ssl::error::SslError;
 use rustc_serialize::json;
+use url;
 
 use message::Message;
 
@@ -21,6 +22,7 @@ pub enum Error {
     ChannelRecvError(mpsc::RecvError),
     JsonEncode(json::EncoderError),
     JsonDecode(json::DecoderError),
+    Url(url::ParseError),
     Ssl(SslError),
     Io(io::Error),
 }
@@ -37,6 +39,7 @@ impl fmt::Display for Error {
             Error::ChannelRecvError(ref err) => err.fmt(f),
             Error::JsonEncode(ref err) => err.fmt(f),
             Error::JsonDecode(ref err) => err.fmt(f),
+            Error::Url(ref err) => err.fmt(f),
             Error::Ssl(ref err) => err.fmt(f),
             Error::Io(ref err) => err.fmt(f),
         }
@@ -55,6 +58,7 @@ impl error::Error for Error {
             Error::ChannelRecvError(ref err) => err.description(),
             Error::JsonEncode(ref err) => err.description(),
             Error::JsonDecode(ref err) => err.description(),
+            Error::Url(ref err) => err.description(),
             Error::Ssl(ref err) => err.description(),
             Error::Io(ref err) => err.description(),
         }
@@ -88,6 +92,12 @@ impl From<json::EncoderError> for Error {
 impl From<json::DecoderError> for Error {
     fn from(err: json::DecoderError) -> Error {
         Error::JsonDecode(err)
+    }
+}
+
+impl From<url::ParseError> for Error {
+    fn from(err: url::ParseError) -> Error {
+        Error::Url(err)
     }
 }
 

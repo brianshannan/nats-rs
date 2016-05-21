@@ -9,13 +9,14 @@ use std::str;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
-use rand::thread_rng;
-use rand::Rng;
-use rand::ThreadRng;
 
 use openssl::ssl::MaybeSslStream;
 use openssl::ssl::SslStream;
+use rand::thread_rng;
+use rand::Rng;
+use rand::ThreadRng;
 use rustc_serialize::json;
+use url::Url;
 
 use Result;
 use config::Config;
@@ -32,7 +33,7 @@ use subscription::Subscription;
 use subscription::SubscriptionID;
 
 // TODO Buffer messages, need to figure out flushing
-// TODO unit tests
+// TODO integration tests
 // TODO documentation
 // TODO get debug to work?
 // TODO another trait for message transmission?
@@ -62,6 +63,7 @@ pub struct NatsCoreConn<W: Write> {
     subscriptions: HashMap<u64, Subscription>,
     server_info: NatsServerInfo,
     server_idx: usize,
+    servers: Vec<Url>,
 }
 
 // TODO the String fields could be &str, but the
@@ -133,6 +135,7 @@ impl NatsConn {
         let mut parser = Parser::new();
         // TODO use a different size?
         // TODO need to disconnect socket before trying to reconnect?
+        // TODO does this thread need to be killed when the conn is dropped?
         let mut buf: [u8; 32768] = [0; 32768];
         loop {
             match reader.read(&mut buf) {
@@ -219,7 +222,12 @@ impl NatsConn {
 
 impl NatsCoreConn<Stream> {
     pub fn new(config: Config) -> Result<(BufReader<Stream>, NatsCoreConn<Stream>)> {
-        let (server_idx, stream) = try!(NatsCoreConn::create_stream(&config));
+        let mut servers = Vec::<Url>::with_capacity(config.hosts.len());
+        for host in &config.hosts {
+            servers.push(try!(Url::parse(host)));
+        }
+
+        let (server_idx, stream) = try!(NatsCoreConn::create_stream(&servers));
         let mut buf_reader = BufReader::new(stream);
 
         let server_info = try!(NatsCoreConn::read_server_info(&config, &mut buf_reader));
@@ -233,15 +241,16 @@ impl NatsCoreConn<Stream> {
             writer: writer,
             server_info: server_info,
             server_idx: server_idx,
+            servers: servers,
         };
         try!(conn.connect(&mut buf_reader));
 
         Ok((buf_reader, conn))
     }
 
-    fn create_stream(config: &Config) -> Result<(usize, TcpStream)> {
-        for (idx, host) in config.hosts.iter().enumerate() {
-            if let Ok(stream) = TcpStream::connect(host) {
+    fn create_stream(servers: &[Url]) -> Result<(usize, TcpStream)> {
+        for (idx, server) in servers.iter().enumerate() {
+            if let Ok(stream) = TcpStream::connect(server) {
                 return Ok((idx, stream));
             }
         }
@@ -283,10 +292,10 @@ impl NatsCoreConn<Stream> {
 
         for _ in 0..self.config.max_reconnects {
             thread::sleep(self.config.reconnect_wait);
-            self.server_idx = (self.server_idx + 1) % self.config.hosts.len();
+            self.server_idx = (self.server_idx + 1) % self.servers.len();
 
             // TODO extract to function and get this moved to the generic impl?
-            let stream = try_continue!(TcpStream::connect(&self.config.hosts[self.server_idx]));
+            let stream = try_continue!(TcpStream::connect(&self.servers[self.server_idx]));
             let mut buf_reader = BufReader::new(stream);
 
             self.server_info = try_continue!(NatsCoreConn::read_server_info(&self.config, &mut buf_reader));
@@ -333,7 +342,7 @@ impl<W: Write> NatsCoreConn<W> {
     }
 
     fn send_connect(&mut self) -> Result<()> {
-        let host = &self.config.hosts[self.server_idx];
+        let host = &self.servers[self.server_idx];
         let (user, pass, auth_token) = {
             let username = {
                 if host.username().len() > 0 {
@@ -533,6 +542,7 @@ mod test {
                 ssl_required: false,
                 max_payload: 100000,
             },
+            servers: vec![Url::parse("nats://localhost:4222").unwrap()],
             server_idx: 0,
         }
     }
@@ -671,8 +681,8 @@ mod test {
     fn test_connect_user_pass() {
         let mut conn = default_core_conn();
         let u = Url::parse("nats://brian:my_pass@localhost:4222").unwrap();
-        conn.config.hosts.clear();
-        conn.config.hosts.push(u);
+        conn.servers.clear();
+        conn.servers.push(u);
         conn.send_connect().unwrap();
         let s = str::from_utf8(&conn.writer).unwrap();
         assert_eq!("CONNECT ", &s[..8]);
@@ -686,8 +696,8 @@ mod test {
     fn test_connect_auth_token() {
         let mut conn = default_core_conn();
         let u = Url::parse("nats://secret_token@localhost:4222").unwrap();
-        conn.config.hosts.clear();
-        conn.config.hosts.push(u);
+        conn.servers.clear();
+        conn.servers.push(u);
         conn.send_connect().unwrap();
         let s = str::from_utf8(&conn.writer).unwrap();
         assert_eq!("CONNECT ", &s[..8]);

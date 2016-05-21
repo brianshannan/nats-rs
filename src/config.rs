@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use openssl::ssl::SslContext;
-use url::Url;
 
 /// Config provides configuration options for a NATS client.
 #[derive(Debug)]
@@ -13,7 +12,7 @@ pub struct Config {
     pub pedantic: bool,
     // TODO different format?
     /// The possible NATS servers to connect to.
-    pub hosts: Vec<Url>,
+    pub hosts: Vec<String>,
     /// Whether to randomize the order of the hosts.
     /// Doing this provides a more even distribution of clients over servers.
     pub shuffle_hosts: bool,
@@ -35,7 +34,7 @@ impl Default for Config {
         Config {
             verbose: false,
             pedantic: false,
-            hosts: vec![Url::parse("nats://localhost:4222").unwrap()],
+            hosts: vec!["nats://localhost:4222".to_owned()],
             shuffle_hosts: true,
             allow_reconnect: true,
             max_reconnects: 10,
