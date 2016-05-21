@@ -1,3 +1,4 @@
+use std::fmt;
 use std::sync::mpsc;
 
 use Result;
@@ -11,6 +12,7 @@ pub trait SubscriptionID {
     fn sub_id(&self) -> u64;
 }
 
+#[derive(Debug)]
 pub enum MessageDispatcher {
     Async(SendAsyncSubscription),
     Channel(SendChannelSubscription),
@@ -25,7 +27,7 @@ impl DispatchMessage for MessageDispatcher {
     }
 }
 
-// #[derive(Debug)]
+#[derive(Debug)]
 pub struct Subscription {
     pub id: u64,
     pub subject: String,
@@ -124,5 +126,13 @@ impl DispatchMessage for SendAsyncSubscription {
         // TODO execute in a different thread?
         (self.callback)(message);
         Ok(())
+    }
+}
+
+impl fmt::Debug for SendAsyncSubscription {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        fmt.debug_struct("SendAsyncSubscription")
+            .field("callback", &"omitted")
+            .finish()
     }
 }

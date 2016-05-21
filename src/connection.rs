@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt;
 use std::io::BufRead;
 use std::io::BufReader;
 use std::io::Read;
@@ -35,7 +36,6 @@ use subscription::SubscriptionID;
 // TODO Buffer messages, need to figure out flushing
 // TODO integration tests
 // TODO documentation
-// TODO get debug to work?
 // TODO another trait for message transmission?
 
 pub type Stream = MaybeSslStream<TcpStream>;
@@ -49,14 +49,23 @@ pub trait MessageProcessor {
 }
 
 /// NatsConn provides an interface for communicating with a Nats server.
-// #[derive(Debug)]
 pub struct NatsConn {
     core_conn: Arc<Mutex<NatsCoreConn<Stream>>>,
     next_sid: u64,
     rng: ThreadRng,
 }
 
-// #[derive(Debug)]
+impl fmt::Debug for NatsConn {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        fmt.debug_struct("NatsConn")
+            .field("core_conn", &self.core_conn)
+            .field("next_sid", &self.next_sid)
+            .field("rng", &"omitted")
+            .finish()
+    }
+}
+
+#[derive(Debug)]
 pub struct NatsCoreConn<W: Write> {
     config: Config,
     writer: W,
