@@ -36,7 +36,6 @@ use subscription::SubscriptionID;
 // TODO Buffer messages, need to figure out flushing
 // TODO integration tests
 // TODO documentation
-// TODO another trait for message transmission?
 
 pub type Stream = MaybeSslStream<TcpStream>;
 
@@ -144,7 +143,8 @@ impl NatsConn {
         let mut parser = Parser::new();
         // TODO use a different size?
         // TODO need to disconnect socket before trying to reconnect?
-        // TODO does this thread need to be killed when the conn is dropped?
+        // TODO just read a line? That would simplify parsing
+        // TODO need to kill this thread when the NatsConn struct is dropped
         let mut buf: [u8; 32768] = [0; 32768];
         loop {
             match reader.read(&mut buf) {

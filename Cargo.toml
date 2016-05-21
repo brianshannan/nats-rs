@@ -12,3 +12,6 @@ url = "1.1.0"
 [dependencies.openssl]
 version = "0.7.12"
 features = ["tlsv1_2"]
+
+[dev-dependencies.lazy_static]
+version = "0.2.1"
