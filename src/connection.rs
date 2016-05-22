@@ -4,6 +4,7 @@ use std::io::BufRead;
 use std::io::BufReader;
 use std::io::Read;
 use std::io::Write;
+// use std::net::Shutdown;
 use std::net::TcpStream;
 use std::ops::DerefMut;
 use std::str;
@@ -33,6 +34,7 @@ use subscription::DispatchMessage;
 use subscription::Subscription;
 use subscription::SubscriptionID;
 
+// TODO make this threadsafe
 // TODO Buffer messages, need to figure out flushing
 // TODO integration tests
 // TODO documentation
@@ -64,6 +66,25 @@ impl fmt::Debug for NatsConn {
     }
 }
 
+// TODO this is necessary to break the read loop in a timely manner
+// but it is very slow for some reason
+impl Drop for NatsConn {
+    fn drop(&mut self) {
+        let mut c = self.core_conn.lock().unwrap();
+
+        c.closed = true;
+        // Close the stream to stop the other thread
+        // match c.writer {
+        //     MaybeSslStream::Normal(ref s) => {
+        //         let _ = s.shutdown(Shutdown::Both);
+        //     },
+        //     MaybeSslStream::Ssl(ref s) => {
+        //         let _ = s.get_ref().shutdown(Shutdown::Both);
+        //     },
+        // };
+    }
+}
+
 #[derive(Debug)]
 pub struct NatsCoreConn<W: Write> {
     config: Config,
@@ -72,6 +93,7 @@ pub struct NatsCoreConn<W: Write> {
     server_info: NatsServerInfo,
     server_idx: usize,
     servers: Vec<Url>,
+    closed: bool,
 }
 
 // TODO the String fields could be &str, but the
@@ -129,7 +151,6 @@ impl NatsConn {
 
         let core_conn_clone = conn.core_conn.clone();
         thread::spawn(move || {
-            // TODO how should this error be handled?
             // this only happens if reconnect completely fails
             let _ = NatsConn::read_loop(core_conn_clone, reader);
             error!("read loop errored out");
@@ -138,32 +159,45 @@ impl NatsConn {
         Ok(conn)
     }
 
+    // TODO make it pretty/reevaluate the thread killing strategy
     /// Reads data sent from the server
     fn read_loop(core_conn: Arc<Mutex<NatsCoreConn<Stream>>>, mut reader: BufReader<Stream>) -> Result<()> {
         let mut parser = Parser::new();
         // TODO use a different size?
         // TODO need to disconnect socket before trying to reconnect?
+        // in the event of a parse/op error?
         // TODO just read a line? That would simplify parsing
-        // TODO need to kill this thread when the NatsConn struct is dropped
         let mut buf: [u8; 32768] = [0; 32768];
         loop {
             match reader.read(&mut buf) {
                 Ok(n) => {
                     let mut c = core_conn.lock().unwrap();
+                    if c.closed {
+                        return Ok(());
+                    }
+
                     if n == 0 {
                         // This is an error condition for BufReaders, apparently
                         reader = try!(c.reconnect());
+                        parser = Parser::new();
                         continue;
                     }
                     match parser.parse(c.deref_mut(), &buf[..n]) {
                         Ok(()) => {},
                         Err(_) => {
                             reader = try!(c.reconnect());
+                            parser = Parser::new();
                         },
                     }
                 },
                 Err(_) => {
-                    reader = try!(core_conn.lock().unwrap().reconnect());
+                    let mut c = core_conn.lock().unwrap();
+                    if c.closed {
+                        return Ok(());
+                    }
+
+                    reader = try!(c.reconnect());
+                    parser = Parser::new();
                 },
             };
         }
@@ -199,8 +233,9 @@ impl NatsConn {
     pub fn subscribe_channel(&mut self, subject: &str, group: Option<&str>) -> Result<ChannelSubscription> {
         let sid = self.next_sid;
         self.next_sid += 1;
-        let (send_sub, recv_sub) = new_channel_subscription(sid, subject.to_owned(), group.map(|s| s.to_owned()));
-        try!(self.core_conn.lock().unwrap().subscribe(send_sub));
+        let mut c = self.core_conn.lock().unwrap();
+        let (send_sub, recv_sub) = new_channel_subscription(sid, subject.to_owned(), group.map(|s| s.to_owned()), c.config.channel_size);
+        try!(c.subscribe(send_sub));
         Ok(recv_sub)
     }
 
@@ -236,34 +271,37 @@ impl NatsCoreConn<Stream> {
             servers.push(try!(Url::parse(host)));
         }
 
-        let (server_idx, stream) = try!(NatsCoreConn::create_stream(&servers));
-        let mut buf_reader = BufReader::new(stream);
+        // Need to create the core connection with servers, so can't be borrowing it
+        let len = servers.len();
+        for idx in 0..len {
+            let (server_info, reader, writer) = try_continue!(NatsCoreConn::create_connection(&config, &servers[idx]));
+            let mut buf_reader = BufReader::new(reader);
 
-        let server_info = try!(NatsCoreConn::read_server_info(&config, &mut buf_reader));
+            let mut conn = NatsCoreConn {
+                config: config,
+                subscriptions: HashMap::new(),
+                writer: writer,
+                server_info: server_info,
+                server_idx: idx,
+                servers: servers,
+                closed: false,
+            };
+            // TODO can't continue because we already gave the config to the conn
+            try!(conn.connect(&mut buf_reader));
 
-        let (reader, writer) = try!(NatsCoreConn::tcp_to_ssl(&config, buf_reader.into_inner()));
-        let mut buf_reader = BufReader::new(reader);
+            return Ok((buf_reader, conn));
+        }
 
-        let mut conn = NatsCoreConn {
-            config: config,
-            subscriptions: HashMap::new(),
-            writer: writer,
-            server_info: server_info,
-            server_idx: server_idx,
-            servers: servers,
-        };
-        try!(conn.connect(&mut buf_reader));
-
-        Ok((buf_reader, conn))
+        Err(Error::NoServers)
     }
 
-    fn create_stream(servers: &[Url]) -> Result<(usize, TcpStream)> {
-        for (idx, server) in servers.iter().enumerate() {
-            if let Ok(stream) = TcpStream::connect(server) {
-                return Ok((idx, stream));
-            }
-        }
-        return Err(Error::NoServers);
+    fn create_connection(config: &Config, host: &Url) -> Result<(NatsServerInfo, Stream, Stream)> {
+        let stream = try!(TcpStream::connect(host));
+        let mut buf_reader = BufReader::new(stream);
+        let server_info = try!(NatsCoreConn::read_server_info(&config, &mut buf_reader));
+        let (reader, writer) = try!(NatsCoreConn::tcp_to_ssl(&config, buf_reader.into_inner()));
+
+        Ok((server_info, reader, writer))
     }
 
     fn tcp_to_ssl(config: &Config, stream: TcpStream) -> Result<(Stream, Stream)> {
@@ -295,7 +333,6 @@ impl NatsCoreConn<Stream> {
 
     pub fn reconnect(&mut self) -> Result<(BufReader<Stream>)> {
         if !self.config.allow_reconnect {
-            // TODO right error
             return Err(Error::NoServers);
         }
 
@@ -303,15 +340,10 @@ impl NatsCoreConn<Stream> {
             thread::sleep(self.config.reconnect_wait);
             self.server_idx = (self.server_idx + 1) % self.servers.len();
 
-            // TODO extract to function and get this moved to the generic impl?
-            let stream = try_continue!(TcpStream::connect(&self.servers[self.server_idx]));
-            let mut buf_reader = BufReader::new(stream);
-
-            self.server_info = try_continue!(NatsCoreConn::read_server_info(&self.config, &mut buf_reader));
-
-            let (reader, writer) = try_continue!(NatsCoreConn::tcp_to_ssl(&self.config, buf_reader.into_inner()));
+            let (server_info, reader, writer) = try_continue!(NatsCoreConn::create_connection(&self.config, &self.servers[self.server_idx]));
             let mut buf_reader = BufReader::new(reader);
 
+            self.server_info = server_info;
             self.writer = writer;
             try_continue!(self.connect(&mut buf_reader));
             try_continue!(self.resend_subscriptions());
@@ -553,13 +585,14 @@ mod test {
             },
             servers: vec![Url::parse("nats://localhost:4222").unwrap()],
             server_idx: 0,
+            closed: false,
         }
     }
 
     #[test]
     fn test_subscribe_no_group() {
         let mut conn = default_core_conn();
-        let (sub1, _) = new_channel_subscription(41, "topic1".to_owned(), None);
+        let (sub1, _) = new_channel_subscription(41, "topic1".to_owned(), None, 10);
         conn.subscribe(sub1).unwrap();
         assert_eq!("SUB topic1  41\r\n", str::from_utf8(&conn.writer).unwrap());
         assert_eq!(1, conn.subscriptions.len());
@@ -572,7 +605,7 @@ mod test {
     #[test]
     fn test_subscribe_queue_group() {
         let mut conn = default_core_conn();
-        let (sub1, _) = new_channel_subscription(924, "topic2".to_owned(), Some("a_queue_group".to_owned()));
+        let (sub1, _) = new_channel_subscription(924, "topic2".to_owned(), Some("a_queue_group".to_owned()), 10);
         conn.subscribe(sub1).unwrap();
         assert_eq!("SUB topic2 a_queue_group 924\r\n", str::from_utf8(&conn.writer).unwrap());
         assert_eq!(1, conn.subscriptions.len());
@@ -585,9 +618,9 @@ mod test {
     #[test]
     fn test_unsubscribe_now() {
         let mut conn = default_core_conn();
-        let (send_sub1, recv_sub1) = new_channel_subscription(41, "topic1".to_owned(), None);
+        let (send_sub1, recv_sub1) = new_channel_subscription(41, "topic1".to_owned(), None, 10);
         conn.subscribe(send_sub1).unwrap();
-        let (send_sub2, _) = new_channel_subscription(924, "topic2".to_owned(), None);
+        let (send_sub2, _) = new_channel_subscription(924, "topic2".to_owned(), None, 10);
         conn.subscribe(send_sub2).unwrap();
         assert_eq!(2, conn.subscriptions.len());
         conn.writer.clear();
@@ -600,9 +633,9 @@ mod test {
     #[test]
     fn test_unsubscribe_auto() {
         let mut conn = default_core_conn();
-        let (send_sub1, recv_sub1) = new_channel_subscription(41, "topic1".to_owned(), None);
+        let (send_sub1, recv_sub1) = new_channel_subscription(41, "topic1".to_owned(), None, 10);
         conn.subscribe(send_sub1).unwrap();
-        let (send_sub2, _) = new_channel_subscription(924, "topic2".to_owned(), None);
+        let (send_sub2, _) = new_channel_subscription(924, "topic2".to_owned(), None, 10);
         conn.subscribe(send_sub2).unwrap();
         assert_eq!(2, conn.subscriptions.len());
         conn.writer.clear();
@@ -635,7 +668,7 @@ mod test {
     #[test]
     fn test_resend_subscriptions_non_auto() {
         let mut conn = default_core_conn();
-        let (send_sub1, _) = new_channel_subscription(41, "topic1".to_owned(), Some("group1".to_owned()));
+        let (send_sub1, _) = new_channel_subscription(41, "topic1".to_owned(), Some("group1".to_owned()), 10);
         conn.subscribe(send_sub1).unwrap();
         conn.writer.clear();
         conn.resend_subscriptions().unwrap();
@@ -645,7 +678,7 @@ mod test {
     #[test]
     fn test_resend_subscriptions_auto_unsubscribe() {
         let mut conn = default_core_conn();
-        let (send_sub1, recv_sub1) = new_channel_subscription(41, "topic1".to_owned(), None);
+        let (send_sub1, recv_sub1) = new_channel_subscription(41, "topic1".to_owned(), None, 10);
         conn.subscribe(send_sub1).unwrap();
         conn.unsubscribe(&recv_sub1, Some(7)).unwrap();
         conn.subscriptions.get_mut(&41).unwrap().delivered = 2;

@@ -10,7 +10,8 @@ pub struct Config {
     pub verbose: bool,
     /// Turns on strict format checking
     pub pedantic: bool,
-    // TODO different format?
+    /// The number of messages channels should be able to buffer
+    pub channel_size: usize,
     /// The possible NATS servers to connect to.
     pub hosts: Vec<String>,
     /// Whether to randomize the order of the hosts.
@@ -34,6 +35,7 @@ impl Default for Config {
         Config {
             verbose: false,
             pedantic: false,
+            channel_size: 128,
             hosts: vec!["nats://localhost:4222".to_owned()],
             shuffle_hosts: true,
             allow_reconnect: true,

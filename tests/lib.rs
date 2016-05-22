@@ -64,6 +64,7 @@ fn test_pub_sub_channel() {
     thread::sleep(Duration::new(1, 0));
     assert!(sub.receiver.try_recv().is_err());
 
+    drop(conn);
     gnatsd.kill().unwrap();
     thread::sleep(*WAIT);
 }
@@ -90,6 +91,7 @@ fn test_pub_sub_callback() {
     thread::sleep(Duration::new(1, 0));
     assert_eq!(72, *num.lock().unwrap());
     conn.unsubscribe(&sub).unwrap();
+    drop(conn);
 
     gnatsd.kill().unwrap();
     thread::sleep(*WAIT);
@@ -132,6 +134,7 @@ fn test_reconnect() {
 
     thread::sleep(Duration::new(1, 0));
     assert_eq!(b"data2", sub.receiver.try_recv().unwrap().data.as_slice());
+    drop(conn);
     tx.send(()).unwrap();
     gnatsd2_handle.join().unwrap();
 }
@@ -163,6 +166,7 @@ fn test_ssl() {
     assert_eq!(b"data", sub.receiver.try_recv().unwrap().data.as_slice());
     conn.unsubscribe(&sub).unwrap();
 
+    drop(conn);
     gnatsd.kill().unwrap();
     thread::sleep(*WAIT);
 }
