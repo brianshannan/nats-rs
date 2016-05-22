@@ -4,7 +4,7 @@ use std::io::BufRead;
 use std::io::BufReader;
 use std::io::Read;
 use std::io::Write;
-// use std::net::Shutdown;
+use std::net::Shutdown;
 use std::net::TcpStream;
 use std::ops::DerefMut;
 use std::str;
@@ -66,22 +66,20 @@ impl fmt::Debug for NatsConn {
     }
 }
 
-// TODO this is necessary to break the read loop in a timely manner
-// but it is very slow for some reason
 impl Drop for NatsConn {
     fn drop(&mut self) {
         let mut c = self.core_conn.lock().unwrap();
 
         c.closed = true;
         // Close the stream to stop the other thread
-        // match c.writer {
-        //     MaybeSslStream::Normal(ref s) => {
-        //         let _ = s.shutdown(Shutdown::Both);
-        //     },
-        //     MaybeSslStream::Ssl(ref s) => {
-        //         let _ = s.get_ref().shutdown(Shutdown::Both);
-        //     },
-        // };
+        match c.writer {
+            MaybeSslStream::Normal(ref s) => {
+                let _ = s.shutdown(Shutdown::Both);
+            },
+            MaybeSslStream::Ssl(ref s) => {
+                let _ = s.get_ref().shutdown(Shutdown::Both);
+            },
+        };
     }
 }
 
