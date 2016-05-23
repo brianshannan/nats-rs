@@ -519,8 +519,10 @@ impl<W: Write> NatsCoreConn<W> {
                 reply: args.reply.as_ref().map(|s| String::from_utf8_lossy(s).into_owned()),
                 data: data,
             };
-            error!("message could not be delivered to subscriber");
-            let _ = s.dispatcher.dispatch_message(m);
+
+            if let Err(_) = s.dispatcher.dispatch_message(m) {
+                error!("message could not be delivered to subscriber");
+            }
             return Some((s.max, s.delivered));
         }
 

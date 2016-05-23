@@ -99,6 +99,40 @@ fn test_pub_sub_callback() {
 
 #[test]
 #[ignore]
+fn test_unsubscribe() {
+    let l = LOCK.lock().unwrap();
+    println!("after lock");
+    let mut gnatsd = Command::new("gnatsd").spawn().unwrap();
+    thread::sleep(*WAIT);
+
+    let config = Config::default();
+    let mut conn = NatsConn::new(config).unwrap();
+    let sub = conn.subscribe_channel("topic1", None).unwrap();
+    println!("after subscribe");
+
+    conn.auto_unsubscribe(&sub, 2).unwrap();
+
+    conn.publish("topic1", None, b"data1").unwrap();
+    conn.publish("topic1", None, b"data2").unwrap();
+    conn.publish("topic1", None, b"data3").unwrap();
+    conn.flush().unwrap();
+    println!("after publish");
+
+    thread::sleep(Duration::new(1, 0));
+    assert_eq!(b"data1", sub.receiver.try_recv().unwrap().data.as_slice());
+    println!("first recv");
+    assert_eq!(b"data2", sub.receiver.try_recv().unwrap().data.as_slice());
+    println!("second recv");
+    assert!(sub.receiver.try_recv().is_err());
+    println!("after recv");
+
+    drop(conn);
+    gnatsd.kill().unwrap();
+    thread::sleep(*WAIT);
+}
+
+#[test]
+#[ignore]
 fn test_reconnect() {
     let l = LOCK.lock().unwrap();
     let mut gnatsd = Command::new("gnatsd").spawn().unwrap();

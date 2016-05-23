@@ -40,6 +40,7 @@ pub struct Subscription {
 pub fn new_channel_subscription(id: u64, subject: String, group: Option<String>, channel_size: usize) -> (Subscription, ChannelSubscription) {
     // TODO allow setting the number, probably with a cap? or use non blocking?
     let (sender, receiver) = mpsc::sync_channel::<Message>(channel_size);
+    let sender_clone = sender.clone();
     let send_sub = Subscription {
         id: id,
         subject: subject,
@@ -55,6 +56,7 @@ pub fn new_channel_subscription(id: u64, subject: String, group: Option<String>,
     let recv_sub = ChannelSubscription {
         id: id,
         receiver: receiver,
+        sender: sender_clone,
     };
     (send_sub, recv_sub)
 }
@@ -63,6 +65,9 @@ pub fn new_channel_subscription(id: u64, subject: String, group: Option<String>,
 #[derive(Debug)]
 pub struct ChannelSubscription {
     id: u64,
+    // This is here to prevent the receiver from losing messages when the sender
+    // is dropped due to an auto unsubscribe
+    sender: mpsc::SyncSender<Message>,
     pub receiver: mpsc::Receiver<Message>,
 }
 
