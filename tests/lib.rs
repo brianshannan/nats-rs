@@ -101,14 +101,12 @@ fn test_pub_sub_callback() {
 #[ignore]
 fn test_unsubscribe() {
     let l = LOCK.lock().unwrap();
-    println!("after lock");
     let mut gnatsd = Command::new("gnatsd").spawn().unwrap();
     thread::sleep(*WAIT);
 
     let config = Config::default();
     let mut conn = NatsConn::new(config).unwrap();
     let sub = conn.subscribe_channel("topic1", None).unwrap();
-    println!("after subscribe");
 
     conn.auto_unsubscribe(&sub, 2).unwrap();
 
@@ -116,17 +114,45 @@ fn test_unsubscribe() {
     conn.publish("topic1", None, b"data2").unwrap();
     conn.publish("topic1", None, b"data3").unwrap();
     conn.flush().unwrap();
-    println!("after publish");
 
     thread::sleep(Duration::new(1, 0));
     assert_eq!(b"data1", sub.receiver.try_recv().unwrap().data.as_slice());
-    println!("first recv");
     assert_eq!(b"data2", sub.receiver.try_recv().unwrap().data.as_slice());
-    println!("second recv");
     assert!(sub.receiver.try_recv().is_err());
-    println!("after recv");
 
     drop(conn);
+    gnatsd.kill().unwrap();
+    thread::sleep(*WAIT);
+}
+
+#[test]
+#[ignore]
+fn test_request() {
+    let l = LOCK.lock().unwrap();
+    let mut gnatsd = Command::new("gnatsd").spawn().unwrap();
+    thread::sleep(*WAIT);
+
+    let config = Config::default();
+    let mut conn = NatsConn::new(config).unwrap();
+
+    let (tx, rx) = mpsc::sync_channel(0);
+    thread::spawn(move || {
+        let config = Config::default();
+        let mut conn2 = NatsConn::new(config).unwrap();
+        let sub = conn2.subscribe_channel("help_topic", None).unwrap();
+        tx.send(()).unwrap();
+        let m = sub.receiver.recv().unwrap();
+        let topic = m.reply.as_ref().unwrap();
+        conn2.publish(topic, None, b"sample data").unwrap();
+        drop(conn2);
+        tx.send(()).unwrap();
+    });
+    rx.recv().unwrap();
+    let m = conn.request("help_topic", b"some random crap").unwrap();
+    assert_eq!(b"sample data", m.data.as_slice());
+
+    drop(conn);
+    rx.recv().unwrap();
     gnatsd.kill().unwrap();
     thread::sleep(*WAIT);
 }

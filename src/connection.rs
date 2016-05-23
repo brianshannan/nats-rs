@@ -219,10 +219,12 @@ impl NatsConn {
     /// Publishes a message on the given subject as waits for a response.
     pub fn request(&mut self, subject: &str, data: &[u8]) -> Result<Message> {
         let inbox = self.new_inbox();
-        let sub = try!(self.subscribe_channel(subject, None));
-        let mut core_conn = self.core_conn.lock().unwrap();
-        try!(core_conn.unsubscribe(&sub, Some(1)));
-        try!(core_conn.publish(subject, Some(&inbox), data));
+        let sub = try!(self.subscribe_channel(&inbox, None));
+        {
+            let mut core_conn = self.core_conn.lock().unwrap();
+            try!(core_conn.unsubscribe(&sub, Some(1)));
+            try!(core_conn.publish(subject, Some(&inbox), data));
+        }
         // TODO timeout? select! call requires nightly
         Ok(try!(sub.receiver.recv()))
     }
