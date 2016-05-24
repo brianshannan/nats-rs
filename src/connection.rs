@@ -220,6 +220,7 @@ impl NatsConn {
     pub fn request(&mut self, subject: &str, data: &[u8]) -> Result<Message> {
         let inbox = self.new_inbox();
         let sub = try!(self.subscribe_channel(&inbox, None));
+        // Don't want to be holding mutex while waiting for the reply
         {
             let mut core_conn = self.core_conn.lock().unwrap();
             try!(core_conn.unsubscribe(&sub, Some(1)));
@@ -356,8 +357,9 @@ impl NatsCoreConn<Stream> {
 
 impl<W: Write> NatsCoreConn<W> {
 
-    // Protocol is "CONNECT <json options>"
+    // Protocol is "CONNECT <json options>\r\n"
     fn connect(&mut self, reader: &mut BufReader<Stream>) -> Result<()> {
+        // TODO set read timeouts?
         try!(self.send_connect());
 
         // TODO fix
@@ -411,7 +413,6 @@ impl<W: Write> NatsCoreConn<W> {
             version: "0.1.0".to_owned(),
         };
 
-        // TODO set read timeouts?
         let conn_message = format!("CONNECT {}\r\n", try!(json::encode(&conn_info)));
         try!(self.writer.write_all(conn_message.as_bytes()));
         try!(self.writer.flush());
@@ -424,11 +425,13 @@ impl<W: Write> NatsCoreConn<W> {
         Ok(())
     }
 
+    // Protocol is "PING\r\n"
     pub fn ping(&mut self) -> Result<()> {
         try!(self.writer.write_all("PING\r\n".as_bytes()));
         Ok(())
     }
 
+    // Protocol is "PONG\r\n"
     pub fn pong(&mut self) -> Result<()> {
         try!(self.writer.write_all("PONG\r\n".as_bytes()));
         Ok(())
@@ -467,6 +470,7 @@ impl<W: Write> NatsCoreConn<W> {
         Ok(())
     }
 
+    // Protocol is "SUB <subject> [group] <id>\r\n"
     pub fn subscribe(&mut self, subscription: Subscription) -> Result<()> {
         let sid = subscription.id;
         let sub_message = format!("SUB {} {} {}\r\n", subscription.subject, subscription.group.as_ref().unwrap_or(&"".to_owned()), sid);
@@ -489,6 +493,7 @@ impl<W: Write> NatsCoreConn<W> {
         Ok(())
     }
 
+    // Protocol is "UNSUB <id> [max str]\r\n"
     pub fn unsubscribe<S: SubscriptionID>(&mut self, subscription: &S, max: Option<usize>) -> Result<()> {
         let mut max_str = "".to_owned();
 
