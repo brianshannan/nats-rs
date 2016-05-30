@@ -1,11 +1,13 @@
 [package]
 name = "nats_client"
+description = "NATS client for rust"
 version = "0.1.0"
 authors = ["Brian Shannan <brianshannan@gmail.com>"]
+license = "MIT"
 
 [dependencies]
 log = "0.3"
-rand = "*"
+rand = "0.3.14"
 rustc-serialize = "0.3"
 url = "1.1.0"
 
