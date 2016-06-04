@@ -42,11 +42,11 @@ use subscription::SubscriptionID;
 pub type Stream = MaybeSslStream<TcpStream>;
 
 pub trait MessageProcessor {
-    fn process_ok(&mut self);
-    fn process_err(&mut self, message: &[u8]);
-    fn process_ping(&mut self);
-    fn process_pong(&mut self);
-    fn process_message(&mut self, args: &MessageArg, message: &[u8]);
+    fn process_ok(&mut self) -> Result<()>;
+    fn process_err(&mut self, message: &[u8]) -> Result<()>;
+    fn process_ping(&mut self) -> Result<()>;
+    fn process_pong(&mut self) -> Result<()>;
+    fn process_message(&mut self, args: &MessageArg, message: &[u8]) -> Result<()>;
 }
 
 /// NatsConn provides an interface for communicating with a Nats server.
@@ -61,7 +61,7 @@ impl fmt::Debug for NatsConn {
         fmt.debug_struct("NatsConn")
             .field("core_conn", &self.core_conn)
             .field("next_sid", &self.next_sid)
-            .field("rng", &"omitted")
+            .field("rng", &"rng")
             .finish()
     }
 }
@@ -149,15 +149,14 @@ impl NatsConn {
 
         let core_conn_clone = conn.core_conn.clone();
         thread::spawn(move || {
-            // this only happens if reconnect completely fails
             let _ = NatsConn::read_loop(core_conn_clone, reader);
+            // this only happens if reconnect completely fails
             error!("read loop errored out");
         });
 
         Ok(conn)
     }
 
-    // TODO make it pretty/reevaluate the thread killing strategy
     /// Reads data sent from the server
     fn read_loop(core_conn: Arc<Mutex<NatsCoreConn<Stream>>>, mut reader: BufReader<Stream>) -> Result<()> {
         let mut parser = Parser::new();
@@ -227,6 +226,7 @@ impl NatsConn {
             try!(core_conn.publish(subject, Some(&inbox), data));
         }
         // TODO timeout? select! call requires nightly
+        // recv_timeout not released yet
         Ok(try!(sub.receiver.recv()))
     }
 
@@ -266,15 +266,14 @@ impl NatsConn {
 }
 
 impl NatsCoreConn<Stream> {
-    pub fn new(config: Config) -> Result<(BufReader<Stream>, NatsCoreConn<Stream>)> {
+    pub fn new(mut config: Config) -> Result<(BufReader<Stream>, NatsCoreConn<Stream>)> {
         let mut servers = Vec::<Url>::with_capacity(config.hosts.len());
         for host in &config.hosts {
             servers.push(try!(Url::parse(host)));
         }
 
         // Need to create the core connection with servers, so can't be borrowing it
-        let len = servers.len();
-        for idx in 0..len {
+        for idx in 0..servers.len() {
             let (server_info, reader, writer) = try_continue!(NatsCoreConn::create_connection(&config, &servers[idx]));
             let mut buf_reader = BufReader::new(reader);
 
@@ -287,10 +286,14 @@ impl NatsCoreConn<Stream> {
                 servers: servers,
                 closed: false,
             };
-            // TODO can't continue because we already gave the config to the conn
-            try!(conn.connect(&mut buf_reader));
 
-            return Ok((buf_reader, conn));
+            match conn.connect(&mut buf_reader) {
+                Ok(()) => return Ok((buf_reader, conn)),
+                Err(_) => {
+                    config = conn.config;
+                    servers = conn.servers;
+                },
+            };
         }
 
         Err(Error::NoServers)
@@ -324,12 +327,10 @@ impl NatsCoreConn<Stream> {
 
         // Check ssl requirements
         match (config.ssl_context.is_some(), server_info.ssl_required) {
-            (true, false) => return Err(Error::SslConnectionRequested),
-            (false, true) => return Err(Error::SslConnectionRequired),
-            _ => {},
-        };
-
-        Ok(server_info)
+            (true, false) => Err(Error::SslConnectionRequested),
+            (false, true) => Err(Error::SslConnectionRequired),
+            _ => Ok(server_info),
+        }
     }
 
     pub fn reconnect(&mut self) -> Result<(BufReader<Stream>)> {
@@ -454,11 +455,7 @@ impl<W: Write> NatsCoreConn<W> {
             buf.extend(" ".as_bytes());
         }
 
-        if data.len() == 0 {
-            buf.extend("0".as_bytes());
-        } else {
-            buf.extend(format!("{}", data.len()).as_bytes());
-        }
+        buf.extend(format!("{}", data.len()).as_bytes());
         buf.extend("\r\n".as_bytes());
 
         if data.len() > 0 {
@@ -538,29 +535,32 @@ impl<W: Write> NatsCoreConn<W> {
 }
 
 impl<W: Write> MessageProcessor for NatsCoreConn<W> {
-    fn process_ok(&mut self) {}
-
-    fn process_err(&mut self, message: &[u8]) {
-        error!("received error from server, closing connection: {}", str::from_utf8(message).unwrap());
-        // TODO close connection/reconnect?
+    fn process_ok(&mut self) -> Result<()> {
+        Ok(())
     }
 
-    fn process_ping(&mut self) {
-        self.pong().unwrap();
+    fn process_err(&mut self, message: &[u8]) -> Result<()> {
+        error!("received error from server, closing connection and reconnecting: {}", str::from_utf8(message).unwrap());
+        Err(Error::ParseError)
     }
 
-    fn process_pong(&mut self) {
+    fn process_ping(&mut self) -> Result<()> {
+        try!(self.pong());
+        Ok(())
+    }
+
+    fn process_pong(&mut self) -> Result<()> {
         // TODO
+        Ok(())
     }
 
-    fn process_message(&mut self, args: &MessageArg, message: &[u8]) {
-        if let Some((max, delivered)) = self.dispatch_message(args, message) {
-            if let Some(m) = max {
-                if delivered >= m {
-                    self.subscriptions.remove(&args.sid);
-                }
+    fn process_message(&mut self, args: &MessageArg, message: &[u8]) -> Result<()> {
+        if let Some((Some(max), delivered)) = self.dispatch_message(args, message) {
+            if delivered >= max {
+                self.subscriptions.remove(&args.sid);
             }
         }
+        Ok(())
     }
 }
 

@@ -26,7 +26,7 @@ use nats_client::Config;
 
 lazy_static! {
     static ref LOCK: Arc<Mutex<()>> = Arc::new(Mutex::new(()));
-    static ref WAIT: Duration = Duration::new(0, 10000000);
+    static ref WAIT: Duration = Duration::new(0, 100000000);
 }
 
 #[test]

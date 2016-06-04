@@ -143,7 +143,7 @@ impl Parser {
                     match b {
                         '\n' => {
                             self.state = NatsOp::Start;
-                            processor.process_ok();
+                            try!(processor.process_ok());
                         },
                         _ => (),
                     };
@@ -189,11 +189,11 @@ impl Parser {
                             let arg = &data[self.after_space..idx-self.drop];
                             if self.arg_buf.is_empty() {
                                 // Entire arg value is in this buffer
-                                processor.process_err(arg);
+                                try!(processor.process_err(arg));
                             } else {
                                 // End of the arg value, but it was split over buffers
                                 self.arg_buf.extend_from_slice(arg);
-                                processor.process_err(&self.arg_buf);
+                                try!(processor.process_err(&self.arg_buf));
                                 self.arg_buf.clear();
                             }
                             self.state = NatsOp::Start;
@@ -225,7 +225,7 @@ impl Parser {
                     match b {
                         '\n' => {
                             self.state = NatsOp::Start;
-                            processor.process_ping();
+                            try!(processor.process_ping());
                         },
                         _ => {},
                     };
@@ -246,7 +246,7 @@ impl Parser {
                     match b {
                         '\n' => {
                             self.state = NatsOp::Start;
-                            processor.process_pong();
+                            try!(processor.process_pong());
                         },
                         _ => {},
                     };
@@ -305,7 +305,7 @@ impl Parser {
                 NatsOp::MsgPayload => {
                     if !self.msg_buf.is_empty() {
                         if self.msg_buf.len() >= self.msg_arg.as_ref().unwrap().size {
-                            processor.process_message(self.msg_arg.as_ref().unwrap(), &self.msg_buf);
+                            try!(processor.process_message(self.msg_arg.as_ref().unwrap(), &self.msg_buf));
                             self.arg_buf.clear();
                             self.msg_buf.clear();
                             self.state = NatsOp::MsgEnd;
@@ -315,7 +315,7 @@ impl Parser {
                             idx += to_copy - 1;
                         }
                     } else if idx - self.after_space >= self.msg_arg.as_ref().unwrap().size {
-                        processor.process_message(self.msg_arg.as_ref().unwrap(), &data[self.after_space..idx]);
+                        try!(processor.process_message(self.msg_arg.as_ref().unwrap(), &data[self.after_space..idx]));
                         self.arg_buf.clear();
                         self.msg_buf.clear();
                         self.state = NatsOp::MsgEnd;
@@ -356,6 +356,7 @@ mod test {
     use connection::MessageProcessor;
     use std::str;
     use std::string::String;
+    use Result;
 
     enum ParseEvent {
         NOk,
@@ -378,24 +379,28 @@ mod test {
     }
 
     impl MessageProcessor for MockMessageProcessor {
-        fn process_ok(&mut self) {
+        fn process_ok(&mut self) -> Result<()> {
             self.events.push(ParseEvent::NOk);
+            Ok(())
         }
 
-        fn process_err(&mut self, message: &[u8]) {
+        fn process_err(&mut self, message: &[u8]) -> Result<()> {
             let s = str::from_utf8(message).unwrap().to_owned();
             self.events.push(ParseEvent::NErr(s));
+            Ok(())
         }
 
-        fn process_ping(&mut self) {
+        fn process_ping(&mut self) -> Result<()> {
             self.events.push(ParseEvent::Ping);
+            Ok(())
         }
 
-        fn process_pong(&mut self) {
+        fn process_pong(&mut self) -> Result<()> {
             self.events.push(ParseEvent::Pong);
+            Ok(())
         }
 
-        fn process_message(&mut self, args: &MessageArg, message: &[u8]) {
+        fn process_message(&mut self, args: &MessageArg, message: &[u8]) -> Result<()> {
             let s = str::from_utf8(message).unwrap().to_owned();
             let a = MessageArg {
                 subject: args.subject.to_vec(),
@@ -405,6 +410,7 @@ mod test {
             };
 
             self.events.push(ParseEvent::Message(a, s));
+            Ok(())
         }
     }
 
