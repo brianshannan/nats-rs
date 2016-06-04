@@ -36,7 +36,6 @@ use subscription::SubscriptionID;
 
 // TODO make this threadsafe
 // TODO Buffer messages, need to figure out flushing
-// TODO integration tests
 // TODO documentation
 
 pub type Stream = MaybeSslStream<TcpStream>;
@@ -72,13 +71,9 @@ impl Drop for NatsConn {
 
         c.closed = true;
         // Close the stream to stop the other thread
-        match c.writer {
-            MaybeSslStream::Normal(ref s) => {
-                let _ = s.shutdown(Shutdown::Both);
-            },
-            MaybeSslStream::Ssl(ref s) => {
-                let _ = s.get_ref().shutdown(Shutdown::Both);
-            },
+        let _ = match c.writer {
+            MaybeSslStream::Normal(ref s) => s.shutdown(Shutdown::Both),
+            MaybeSslStream::Ssl(ref s) => s.get_ref().shutdown(Shutdown::Both),
         };
     }
 }
@@ -168,6 +163,7 @@ impl NatsConn {
         loop {
             match reader.read(&mut buf) {
                 Ok(n) => {
+                    trace!("nats: read {} bytes", n);
                     let mut c = core_conn.lock().unwrap();
                     if c.closed {
                         return Ok(());
@@ -363,7 +359,6 @@ impl<W: Write> NatsCoreConn<W> {
         // TODO set read timeouts?
         try!(self.send_connect());
 
-        // TODO fix
         if self.config.verbose {
             let mut response = "".to_owned();
             try!(reader.read_line(&mut response));
@@ -409,7 +404,7 @@ impl<W: Write> NatsCoreConn<W> {
             pass: pass,
             auth_token: auth_token,
             ssl_required: self.config.ssl_context.is_some(),
-            name: "TODO".to_owned(),
+            name: "".to_owned(),
             lang: "rust".to_owned(),
             version: "0.1.0".to_owned(),
         };
@@ -440,12 +435,17 @@ impl<W: Write> NatsCoreConn<W> {
 
     // Protocol is "PUB <subject> [reply-to] <payload size>\r\n[payload]\r\n"
     pub fn publish(&mut self, subject: &str, reply: Option<&str>, data: &[u8]) -> Result<()> {
-        // TODO need probably a better was of creating messages
+        // TODO probably a better was of creating messages?
         if data.len() as u64 > self.server_info.max_payload {
             return Err(Error::MessageTooLarge);
         }
 
-        let mut buf = Vec::<u8>::new();
+        let total_size = 4 + // "PUB ""
+            subject.len() + 1 + // "<subject> "
+            reply.unwrap_or("").len() + 1 + // "<reply> "
+            format!("{}", data.len()).len() + 2 + // "<data len>\r\n"
+            data.len() + 2; // "<data>\n\n"
+        let mut buf = Vec::<u8>::with_capacity(total_size);
         buf.extend("PUB ".as_bytes());
         buf.extend(subject.as_bytes());
         buf.extend(" ".as_bytes());
@@ -457,10 +457,7 @@ impl<W: Write> NatsCoreConn<W> {
 
         buf.extend(format!("{}", data.len()).as_bytes());
         buf.extend("\r\n".as_bytes());
-
-        if data.len() > 0 {
-            buf.extend(data);
-        }
+        buf.extend(data);
         buf.extend("\r\n".as_bytes());
 
         try!(self.writer.write_all(&buf));
