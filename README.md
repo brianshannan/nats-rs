@@ -27,6 +27,8 @@ let msg = Message {
   // contents
 }
 conn.publish_message(msg).unwrap();
+
+conn.flush().unwrap();
 ```
 
 ### Unsubscribing
@@ -46,6 +48,6 @@ let msg = conn.request("subject", b"data").unwrap();
 let mut ssl_context = SslContext::new(SslMethod::Tlsv1_2).unwrap();
 let path = Path::new("certs/ca.pem");
 ssl_context.set_CA_file(&path).unwrap();
-let config = config::Config {ssl_context: Some(ssl_context), ..Default::default()};
-let mut conn = connection::NatsConn::new(config).unwrap();
+let config = Config {ssl_context: Some(ssl_context), ..Default::default()};
+let mut conn = NatsConn::new(config).unwrap();
 ```
