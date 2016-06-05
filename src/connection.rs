@@ -6,7 +6,7 @@ use std::io::Read;
 use std::io::Write;
 use std::net::Shutdown;
 use std::net::TcpStream;
-use std::ops::DerefMut;
+// use std::ops::DerefMut;
 use std::str;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -25,7 +25,8 @@ use config::Config;
 use errors::Error;
 use message::Message;
 use parse::MessageArg;
-use parse::Parser;
+use parse::parse_line;
+use parse::ParseResult;
 use subscription::new_async_subscription;
 use subscription::new_channel_subscription;
 use subscription::AsyncSubscription;
@@ -39,14 +40,6 @@ use subscription::SubscriptionID;
 // TODO documentation
 
 pub type Stream = MaybeSslStream<TcpStream>;
-
-pub trait MessageProcessor {
-    fn process_ok(&mut self) -> Result<()>;
-    fn process_err(&mut self, message: &[u8]) -> Result<()>;
-    fn process_ping(&mut self) -> Result<()>;
-    fn process_pong(&mut self) -> Result<()>;
-    fn process_message(&mut self, args: &MessageArg, message: &[u8]) -> Result<()>;
-}
 
 /// NatsConn provides an interface for communicating with a Nats server.
 pub struct NatsConn {
@@ -154,14 +147,13 @@ impl NatsConn {
 
     /// Reads data sent from the server
     fn read_loop(core_conn: Arc<Mutex<NatsCoreConn<Stream>>>, mut reader: BufReader<Stream>) -> Result<()> {
-        let mut parser = Parser::new();
-        // TODO use a different size?
-        // TODO need to disconnect socket before trying to reconnect?
+        // TODO need to disconnect socket before trying to reconnect
         // in the event of a parse/op error?
-        // TODO just read a line? That would simplify parsing
-        let mut buf: [u8; 32768] = [0; 32768];
+        // TODO different size?
+        let mut s = String::with_capacity(1024);
+        let mut scratch = String::with_capacity(2);
         loop {
-            match reader.read(&mut buf) {
+            match reader.read_line(&mut s) {
                 Ok(n) => {
                     trace!("nats: read {} bytes", n);
                     let mut c = core_conn.lock().unwrap();
@@ -172,15 +164,13 @@ impl NatsConn {
                     if n == 0 {
                         // This is an error condition for BufReaders, apparently
                         reader = try!(c.reconnect());
-                        parser = Parser::new();
                         continue;
                     }
-                    match parser.parse(c.deref_mut(), &buf[..n]) {
-                        Ok(()) => {},
-                        Err(_) => {
-                            reader = try!(c.reconnect());
-                            parser = Parser::new();
-                        },
+
+                    let line = &s[..n];
+                    let pr = parse_line(line);
+                    if let Err(_) = NatsConn::handle_parse_result(pr, &mut c, &mut reader, &mut scratch) {
+                        reader = try!(c.reconnect());
                     }
                 },
                 Err(_) => {
@@ -190,9 +180,29 @@ impl NatsConn {
                     }
 
                     reader = try!(c.reconnect());
-                    parser = Parser::new();
                 },
             };
+
+            s.clear();
+            scratch.clear();
+        }
+    }
+
+    fn handle_parse_result(pr: Result<ParseResult>, c: &mut NatsCoreConn<Stream>, reader: &mut BufReader<Stream>, scratch: &mut String) -> Result<()> {
+        match pr {
+            Ok(ParseResult::NoOp) => Ok(()),
+            Ok(ParseResult::Okay) => Ok(try!(c.process_ok())),
+            Ok(ParseResult::Error(m)) => Ok(try!(c.process_err(m))),
+            Ok(ParseResult::Ping) => Ok(try!(c.process_ping())),
+            Ok(ParseResult::Pong) => Ok(try!(c.process_pong())),
+            Ok(ParseResult::Message(ref arg)) => {
+                let mut buf: Vec<u8> = vec![0; arg.size];
+                try!(reader.read_exact(&mut buf));
+                try!(c.process_message(arg, buf));
+                try!(reader.read_line(scratch));
+                Ok(())
+            },
+            Err(e) => Err(e),
         }
     }
 
@@ -508,36 +518,12 @@ impl<W: Write> NatsCoreConn<W> {
         Ok(())
     }
 
-    fn dispatch_message(&mut self, args: &MessageArg, message: &[u8]) -> Option<(Option<usize>, usize)> {
-        // TODO is this how errors here should be handled?
-        let sub = self.subscriptions.get_mut(&args.sid);
-        if let Some(s) = sub {
-            s.delivered += 1;
-            let mut data = Vec::with_capacity(message.len());
-            data.extend_from_slice(message);
-            let m = Message {
-                subject: String::from_utf8_lossy(&args.subject).into_owned(),
-                reply: args.reply.as_ref().map(|s| String::from_utf8_lossy(s).into_owned()),
-                data: data,
-            };
-
-            if let Err(_) = s.dispatcher.dispatch_message(m) {
-                error!("message could not be delivered to subscriber");
-            }
-            return Some((s.max, s.delivered));
-        }
-
-        None
-    }
-}
-
-impl<W: Write> MessageProcessor for NatsCoreConn<W> {
     fn process_ok(&mut self) -> Result<()> {
         Ok(())
     }
 
-    fn process_err(&mut self, message: &[u8]) -> Result<()> {
-        error!("received error from server, closing connection and reconnecting: {}", str::from_utf8(message).unwrap());
+    fn process_err(&mut self, message: &str) -> Result<()> {
+        error!("received error from server, closing connection and reconnecting: {}", message);
         Err(Error::ParseError)
     }
 
@@ -551,13 +537,34 @@ impl<W: Write> MessageProcessor for NatsCoreConn<W> {
         Ok(())
     }
 
-    fn process_message(&mut self, args: &MessageArg, message: &[u8]) -> Result<()> {
+    fn process_message(&mut self, args: &MessageArg, message: Vec<u8>) -> Result<()> {
         if let Some((Some(max), delivered)) = self.dispatch_message(args, message) {
             if delivered >= max {
                 self.subscriptions.remove(&args.sid);
             }
         }
         Ok(())
+    }
+
+    // This method exists because of borrowing problems of self.subscriptions in process_message
+    fn dispatch_message(&mut self, args: &MessageArg, data: Vec<u8>) -> Option<(Option<usize>, usize)> {
+        // TODO is this how errors here should be handled?
+        let sub = self.subscriptions.get_mut(&args.sid);
+        if let Some(s) = sub {
+            s.delivered += 1;
+            let m = Message {
+                subject: args.subject.to_owned(),
+                reply: args.reply.map(|s| s.to_owned()),
+                data: data,
+            };
+
+            if let Err(_) = s.dispatcher.dispatch_message(m) {
+                error!("message could not be delivered to subscriber");
+            }
+            return Some((s.max, s.delivered));
+        }
+
+        None
     }
 }
 

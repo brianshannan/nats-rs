@@ -53,14 +53,16 @@ fn test_pub_sub_channel() {
     let config = Config::default();
     let mut conn = NatsConn::new(config).unwrap();
     let sub = conn.subscribe_channel("topic1", None).unwrap();
-    conn.publish("topic1", None, b"data").unwrap();
+    conn.publish("topic1", None, b"data1").unwrap();
+    conn.publish("topic1", Some("thing"), b"data2").unwrap();
     conn.flush().unwrap();
 
     thread::sleep(Duration::new(1, 0));
-    assert_eq!(b"data", sub.receiver.try_recv().unwrap().data.as_slice());
+    assert_eq!(b"data1", sub.receiver.try_recv().unwrap().data.as_slice());
+    assert_eq!(b"data2", sub.receiver.try_recv().unwrap().data.as_slice());
     conn.unsubscribe(&sub).unwrap();
 
-    conn.publish("topic1", None, b"data").unwrap();
+    conn.publish("topic1", None, b"data1").unwrap();
     thread::sleep(Duration::new(1, 0));
     assert!(sub.receiver.try_recv().is_err());
 

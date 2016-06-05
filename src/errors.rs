@@ -1,6 +1,7 @@
 use std::error;
 use std::fmt;
 use std::io;
+use std::num;
 use std::sync::mpsc;
 
 use openssl::ssl::error::SslError;
@@ -18,6 +19,7 @@ pub enum Error {
     MessageTooLarge,
     SslConnectionRequested,
     SslConnectionRequired,
+    ParseInt(num::ParseIntError),
     ChannelSendError(mpsc::SendError<Message>),
     ChannelRecvError(mpsc::RecvError),
     JsonEncode(json::EncoderError),
@@ -35,6 +37,7 @@ impl fmt::Display for Error {
             Error::MessageTooLarge => write!(f, "message exceeded maximum allowed size from server"),
             Error::SslConnectionRequested => write!(f, "ssl connection was requested, but is unavailable"),
             Error::SslConnectionRequired => write!(f, "ssl connection is required from the server, but not given"),
+            Error::ParseInt(ref err) => err.fmt(f),
             Error::ChannelSendError(ref err) => err.fmt(f),
             Error::ChannelRecvError(ref err) => err.fmt(f),
             Error::JsonEncode(ref err) => err.fmt(f),
@@ -54,6 +57,7 @@ impl error::Error for Error {
             Error::MessageTooLarge => "message too large",
             Error::SslConnectionRequested => "ssl connection requested",
             Error::SslConnectionRequired => "ssl connection required",
+            Error::ParseInt(ref err) => err.description(),
             Error::ChannelSendError(ref err) => err.description(),
             Error::ChannelRecvError(ref err) => err.description(),
             Error::JsonEncode(ref err) => err.description(),
@@ -104,5 +108,11 @@ impl From<url::ParseError> for Error {
 impl From<SslError> for Error {
     fn from(err: SslError) -> Error {
         Error::Ssl(err)
+    }
+}
+
+impl From<num::ParseIntError> for Error {
+    fn from(err: num::ParseIntError) -> Error {
+        Error::ParseInt(err)
     }
 }
