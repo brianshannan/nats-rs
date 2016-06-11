@@ -1,6 +1,4 @@
 # nats-rs
-Still very much a work in progress
-
 NATS client for Rust
 
 ## Usage
