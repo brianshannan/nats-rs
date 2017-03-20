@@ -1,0 +1,19 @@
+[package]
+name = "nats_client"
+description = "NATS client for rust"
+version = "0.1.0"
+authors = ["Brian Shannan <brianshannan@gmail.com>"]
+license = "MIT"
+
+[dependencies]
+log = "0.3"
+rand = "0.3.14"
+rustc-serialize = "0.3"
+url = "1.1.0"
+
+[dependencies.openssl]
+version = "0.7.12"
+features = ["tlsv1_2"]
+
+[dev-dependencies.lazy_static]
+version = "0.2.1"

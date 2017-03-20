@@ -1,0 +1,15 @@
+[package]
+name = "nats_streaming_client"
+description = "NATS client for rust"
+version = "0.1.0"
+authors = ["Brian Shannan <brianshannan@gmail.com>"]
+license = "MIT"
+
+[dependencies]
+protobuf = "*"
+rand = "0.3.14"
+timer = "*"
+time = "*"
+
+[dependencies.nats_client]
+path = "../nats"

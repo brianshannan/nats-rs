@@ -1,4 +1,6 @@
 use std::fmt;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::mpsc;
 
 use Result;
@@ -12,29 +14,14 @@ pub trait SubscriptionID {
     fn sub_id(&self) -> u64;
 }
 
-#[derive(Debug)]
-pub enum MessageDispatcher {
-    Async(SendAsyncSubscription),
-    Channel(SendChannelSubscription),
-}
-
-impl DispatchMessage for MessageDispatcher {
-    fn dispatch_message(&self, message: Message) -> Result<()> {
-        match *self {
-            MessageDispatcher::Async(ref sub) => sub.dispatch_message(message),
-            MessageDispatcher::Channel(ref sub) => sub.dispatch_message(message),
-        }
-    }
-}
-
-#[derive(Debug)]
+// #[derive(Debug)]
 pub struct Subscription {
     pub id: u64,
     pub subject: String,
     pub group: Option<String>,
     pub delivered: usize,
     pub max: Option<usize>,
-    pub dispatcher: MessageDispatcher,
+    pub dispatcher: Arc<Mutex<DispatchMessage + Send>>,
 }
 
 pub fn new_channel_subscription(id: u64, subject: String, group: Option<String>, channel_size: usize) -> (Subscription, ChannelSubscription) {
@@ -46,10 +33,12 @@ pub fn new_channel_subscription(id: u64, subject: String, group: Option<String>,
         group: group,
         delivered: 0,
         max: None,
-        dispatcher: MessageDispatcher::Channel(
-            SendChannelSubscription {
-                sender: sender
-            }
+        dispatcher: Arc::new(
+            Mutex::new(
+                SendChannelSubscription {
+                    sender: sender
+                }
+            )
         ),
     };
     let recv_sub = ChannelSubscription {
@@ -94,10 +83,12 @@ pub fn new_async_subscription<F>(id: u64, subject: String, group: Option<String>
         group: group,
         delivered: 0,
         max: None,
-        dispatcher: MessageDispatcher::Async(
-            SendAsyncSubscription {
-                callback: Box::new(callback),
-            }
+        dispatcher: Arc::new(
+            Mutex::new(
+                SendAsyncSubscription {
+                    callback: Box::new(callback),
+                }
+            )
         ),
     };
     let recv_sub = AsyncSubscription {

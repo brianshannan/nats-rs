@@ -6,17 +6,16 @@ use std::io::Read;
 use std::io::Write;
 use std::net::Shutdown;
 use std::net::TcpStream;
-// use std::ops::DerefMut;
 use std::str;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
+use std::time::Duration;
 
 use openssl::ssl::MaybeSslStream;
 use openssl::ssl::SslStream;
-use rand::thread_rng;
 use rand::Rng;
-use rand::ThreadRng;
+use rand::StdRng;
 use rustc_serialize::json;
 use url::Url;
 
@@ -31,27 +30,41 @@ use subscription::new_async_subscription;
 use subscription::new_channel_subscription;
 use subscription::AsyncSubscription;
 use subscription::ChannelSubscription;
-use subscription::DispatchMessage;
+// use subscription::DispatchMessage;
 use subscription::Subscription;
 use subscription::SubscriptionID;
 
-// TODO make this threadsafe
 // TODO Buffer messages, need to figure out flushing
 // TODO documentation
 
 pub type Stream = MaybeSslStream<TcpStream>;
 
+type ThreadsafeU64 = Arc<Mutex<u64>>;
+
+trait GetAndIncrement {
+    fn get_and_increment(&self) -> u64;
+}
+
+impl GetAndIncrement for ThreadsafeU64 {
+    fn get_and_increment(&self) -> u64 {
+        let mut num = self.lock().unwrap();
+        let return_num = *num;
+        *num += 1;
+        return_num
+    }
+}
+
 /// NatsConn provides an interface for communicating with a Nats server.
 pub struct NatsConn {
     core_conn: Arc<Mutex<NatsCoreConn<Stream>>>,
-    next_sid: u64,
-    rng: ThreadRng,
+    next_sid: ThreadsafeU64,
+    rng: Arc<Mutex<StdRng>>,
 }
 
 impl fmt::Debug for NatsConn {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         fmt.debug_struct("NatsConn")
-            .field("core_conn", &self.core_conn)
+            // .field("core_conn", &self.core_conn)
             .field("next_sid", &self.next_sid)
             .field("rng", &"rng")
             .finish()
@@ -71,7 +84,7 @@ impl Drop for NatsConn {
     }
 }
 
-#[derive(Debug)]
+// #[derive(Debug)]
 pub struct NatsCoreConn<W: Write> {
     config: Config,
     writer: W,
@@ -82,6 +95,7 @@ pub struct NatsCoreConn<W: Write> {
     closed: bool,
 }
 
+// TODO serde
 // TODO the String fields could be &str, but the
 // serialization macros don't like it
 #[derive(Debug, RustcDecodable, RustcEncodable)]
@@ -123,7 +137,7 @@ macro_rules! try_continue {
 impl NatsConn {
     /// Constructs a new NatsConn using the options in the provide Config struct
     pub fn new(mut config: Config) -> Result<NatsConn> {
-        let mut rng = thread_rng();
+        let mut rng = StdRng::new()?;
         if config.shuffle_hosts {
             rng.shuffle(&mut config.hosts);
         }
@@ -131,8 +145,8 @@ impl NatsConn {
         let (reader, core_conn) = try!(NatsCoreConn::new(config));
         let conn = NatsConn {
             core_conn: Arc::new(Mutex::new(core_conn)),
-            next_sid: 0,
-            rng: rng,
+            next_sid: Arc::new(Mutex::new(0)),
+            rng: Arc::new(Mutex::new(rng)),
         };
 
         let core_conn_clone = conn.core_conn.clone();
@@ -207,22 +221,26 @@ impl NatsConn {
     }
 
     /// Publishes a message on the given subject.
-    pub fn publish(&mut self, subject: &str, reply: Option<&str>, data: &[u8]) -> Result<()> {
+    pub fn publish(&self, subject: &str, reply: Option<&str>, data: &[u8]) -> Result<()> {
         self.core_conn.lock().unwrap().publish(subject, reply, data)
     }
 
     /// Publishes a message on the given subject.
-    pub fn publish_message(&mut self, message: &Message) -> Result<()> {
+    pub fn publish_message(&self, message: &Message) -> Result<()> {
         self.core_conn.lock().unwrap().publish(&message.subject, message.reply.as_ref().map(|s| s.as_str()), &message.data)
     }
 
     /// Constructs a unique string for use as a reply subject.
-    fn new_inbox(&mut self) -> String {
-        "_INBOX.".to_owned() + self.rng.gen_ascii_chars().take(22).collect::<String>().as_str()
+    pub fn new_inbox(&self) -> String {
+        "_INBOX.".to_owned() + self.new_guid().as_str()
+    }
+
+    pub fn new_guid(&self) -> String {
+        self.rng.lock().unwrap().gen_ascii_chars().take(22).collect::<String>()
     }
 
     /// Publishes a message on the given subject as waits for a response.
-    pub fn request(&mut self, subject: &str, data: &[u8]) -> Result<Message> {
+    pub fn request(&self, subject: &str, data: &[u8], timeout: Option<Duration>) -> Result<Message> {
         let inbox = self.new_inbox();
         let sub = try!(self.subscribe_channel(&inbox, None));
         // Don't want to be holding mutex while waiting for the reply
@@ -231,15 +249,13 @@ impl NatsConn {
             try!(core_conn.unsubscribe(&sub, Some(1)));
             try!(core_conn.publish(subject, Some(&inbox), data));
         }
-        // TODO timeout? select! call requires nightly
-        // recv_timeout not released yet
-        Ok(try!(sub.receiver.recv()))
+
+        Ok(try!(sub.receiver.recv_timeout(timeout.unwrap_or(Duration::new(10, 0)))))
     }
 
     /// Subscribes to a subject, placing received messages into a channel
-    pub fn subscribe_channel(&mut self, subject: &str, group: Option<&str>) -> Result<ChannelSubscription> {
-        let sid = self.next_sid;
-        self.next_sid += 1;
+    pub fn subscribe_channel(&self, subject: &str, group: Option<&str>) -> Result<ChannelSubscription> {
+        let sid = self.next_sid.get_and_increment();
         let mut c = self.core_conn.lock().unwrap();
         let (send_sub, recv_sub) = new_channel_subscription(sid, subject.to_owned(), group.map(|s| s.to_owned()), c.config.channel_size);
         try!(c.subscribe(send_sub));
@@ -247,26 +263,25 @@ impl NatsConn {
     }
 
     /// Subscribes to a subject, executing the provided callback with received messages.
-    pub fn subscribe_async<F>(&mut self, subject: &str, group: Option<&str>, callback: F) -> Result<AsyncSubscription> where F: Fn(Message) + Send + 'static{
-        let sid = self.next_sid;
-        self.next_sid += 1;
+    pub fn subscribe_async<F>(&self, subject: &str, group: Option<&str>, callback: F) -> Result<AsyncSubscription> where F: Fn(Message) + Send + 'static {
+        let sid = self.next_sid.get_and_increment();
         let (send_sub, recv_sub) = new_async_subscription(sid, subject.to_owned(), group.map(|s| s.to_owned()), callback);
         try!(self.core_conn.lock().unwrap().subscribe(send_sub));
         Ok(recv_sub)
     }
 
     /// Unsubscribes from the given subscription.
-    pub fn unsubscribe<S: SubscriptionID>(&mut self, subscription: &S) -> Result<()> {
+    pub fn unsubscribe<S: SubscriptionID>(&self, subscription: &S) -> Result<()> {
         self.core_conn.lock().unwrap().unsubscribe(subscription, None)
     }
 
     /// Automatically unsubscribe after the given number of messages are received on the subscription.
-    pub fn auto_unsubscribe<S: SubscriptionID>(&mut self, subscription: &S, max: usize) -> Result<()> {
+    pub fn auto_unsubscribe<S: SubscriptionID>(&self, subscription: &S, max: usize) -> Result<()> {
         self.core_conn.lock().unwrap().unsubscribe(subscription, Some(max))
     }
 
     /// Flushes any pending data
-    pub fn flush(&mut self) -> Result<()> {
+    pub fn flush(&self) -> Result<()> {
         self.core_conn.lock().unwrap().flush()
     }
 }
@@ -558,9 +573,15 @@ impl<W: Write> NatsCoreConn<W> {
                 data: data,
             };
 
-            if let Err(_) = s.dispatcher.dispatch_message(m) {
-                error!("message could not be delivered to subscriber");
-            }
+            let dispatcher_clone = s.dispatcher.clone();
+            thread::spawn(move || {
+                // let _ = dispatcher_clone.lock().unwrap().dispatch_message(m);
+                let dispatcher = dispatcher_clone.lock().unwrap();
+                if let Err(_) = dispatcher.dispatch_message(m) {
+                    error!("message could not be delivered to subscriber");
+                }
+            });
+
             return Some((s.max, s.delivered));
         }
 

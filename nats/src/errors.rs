@@ -22,6 +22,7 @@ pub enum Error {
     ParseInt(num::ParseIntError),
     ChannelSendError(mpsc::SendError<Message>),
     ChannelRecvError(mpsc::RecvError),
+    ChannelRecvTimeoutError(mpsc::RecvTimeoutError),
     JsonEncode(json::EncoderError),
     JsonDecode(json::DecoderError),
     Url(url::ParseError),
@@ -40,6 +41,7 @@ impl fmt::Display for Error {
             Error::ParseInt(ref err) => err.fmt(f),
             Error::ChannelSendError(ref err) => err.fmt(f),
             Error::ChannelRecvError(ref err) => err.fmt(f),
+            Error::ChannelRecvTimeoutError(ref err) => err.fmt(f),
             Error::JsonEncode(ref err) => err.fmt(f),
             Error::JsonDecode(ref err) => err.fmt(f),
             Error::Url(ref err) => err.fmt(f),
@@ -60,6 +62,7 @@ impl error::Error for Error {
             Error::ParseInt(ref err) => err.description(),
             Error::ChannelSendError(ref err) => err.description(),
             Error::ChannelRecvError(ref err) => err.description(),
+            Error::ChannelRecvTimeoutError(ref err) => err.description(),
             Error::JsonEncode(ref err) => err.description(),
             Error::JsonDecode(ref err) => err.description(),
             Error::Url(ref err) => err.description(),
@@ -84,6 +87,12 @@ impl From<mpsc::SendError<Message>> for Error {
 impl From<mpsc::RecvError> for Error {
     fn from(err: mpsc::RecvError) -> Error {
         Error::ChannelRecvError(err)
+    }
+}
+
+impl From<mpsc::RecvTimeoutError> for Error {
+    fn from(err: mpsc::RecvTimeoutError) -> Error {
+        Error::ChannelRecvTimeoutError(err)
     }
 }
 

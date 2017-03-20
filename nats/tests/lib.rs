@@ -11,7 +11,6 @@ use std::sync::Mutex;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
-use std::path::Path;
 
 use openssl::ssl::SslContext;
 use openssl::ssl::SslMethod;
@@ -26,6 +25,7 @@ use nats_client::Config;
 
 lazy_static! {
     static ref LOCK: Arc<Mutex<()>> = Arc::new(Mutex::new(()));
+    // 100 ms
     static ref WAIT: Duration = Duration::new(0, 100000000);
 }
 
@@ -51,7 +51,7 @@ fn test_pub_sub_channel() {
     thread::sleep(*WAIT);
 
     let config = Config::default();
-    let mut conn = NatsConn::new(config).unwrap();
+    let conn = NatsConn::new(config).unwrap();
     let sub = conn.subscribe_channel("topic1", None).unwrap();
     conn.publish("topic1", None, b"data1").unwrap();
     conn.publish("topic1", Some("thing"), b"data2").unwrap();
@@ -79,7 +79,7 @@ fn test_pub_sub_callback() {
     thread::sleep(*WAIT);
 
     let config = Config::default();
-    let mut conn = NatsConn::new(config).unwrap();
+    let conn = NatsConn::new(config).unwrap();
 
     let num = Arc::new(Mutex::new(47));
     let num2 = num.clone();
@@ -107,7 +107,7 @@ fn test_unsubscribe() {
     thread::sleep(*WAIT);
 
     let config = Config::default();
-    let mut conn = NatsConn::new(config).unwrap();
+    let conn = NatsConn::new(config).unwrap();
     let sub = conn.subscribe_channel("topic1", None).unwrap();
 
     conn.auto_unsubscribe(&sub, 2).unwrap();
@@ -135,12 +135,12 @@ fn test_request() {
     thread::sleep(*WAIT);
 
     let config = Config::default();
-    let mut conn = NatsConn::new(config).unwrap();
+    let conn = NatsConn::new(config).unwrap();
 
     let (tx, rx) = mpsc::sync_channel(0);
     thread::spawn(move || {
         let config = Config::default();
-        let mut conn2 = NatsConn::new(config).unwrap();
+        let conn2 = NatsConn::new(config).unwrap();
         let sub = conn2.subscribe_channel("help_topic", None).unwrap();
         tx.send(()).unwrap();
         let m = sub.receiver.recv().unwrap();
@@ -150,7 +150,7 @@ fn test_request() {
         tx.send(()).unwrap();
     });
     rx.recv().unwrap();
-    let m = conn.request("help_topic", b"some random crap").unwrap();
+    let m = conn.request("help_topic", b"some random crap", None).unwrap();
     assert_eq!(b"sample data", m.data.as_slice());
 
     drop(conn);
@@ -168,7 +168,7 @@ fn test_reconnect() {
 
     let mut config = Config::default();
     config.hosts.push("nats://localhost:4223".to_owned());
-    let mut conn = NatsConn::new(config).unwrap();
+    let conn = NatsConn::new(config).unwrap();
 
     let sub = conn.subscribe_channel("reconnect_topic", None).unwrap();
     conn.publish("reconnect_topic", None, b"data1").unwrap();
@@ -214,12 +214,10 @@ fn test_ssl() {
         .spawn().unwrap();
     thread::sleep(*WAIT);
 
-    let mut ssl_context = SslContext::new(SslMethod::Tlsv1_2).unwrap();
-    let path = Path::new("tests/certs/ca.pem");
-    ssl_context.set_CA_file(&path).unwrap();
+    let ssl_context = SslContext::new(SslMethod::Tlsv1_2).unwrap();
     let config = Config {ssl_context: Some(ssl_context), ..Default::default()};
 
-    let mut conn = NatsConn::new(config).unwrap();
+    let conn = NatsConn::new(config).unwrap();
     let sub = conn.subscribe_channel("topic1", None).unwrap();
     conn.publish("topic1", None, b"data").unwrap();
     conn.flush().unwrap();

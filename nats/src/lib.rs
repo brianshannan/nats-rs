@@ -10,7 +10,6 @@ mod connection;
 mod errors;
 mod message;
 mod parse;
-// mod parse_old;
 mod subscription;
 
 pub use config::Config;
