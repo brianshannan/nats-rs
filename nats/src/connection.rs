@@ -257,7 +257,7 @@ impl NatsConn {
     pub fn subscribe_channel(&self, subject: &str, group: Option<&str>) -> Result<ChannelSubscription> {
         let sid = self.next_sid.get_and_increment();
         let mut c = self.core_conn.lock().unwrap();
-        let (send_sub, recv_sub) = new_channel_subscription(sid, subject.to_owned(), group.map(|s| s.to_owned()), c.config.channel_size);
+        let (send_sub, recv_sub) = new_channel_subscription(sid, subject.to_owned(), group.map(str::to_owned), c.config.channel_size);
         try!(c.subscribe(send_sub));
         Ok(recv_sub)
     }
@@ -265,7 +265,7 @@ impl NatsConn {
     /// Subscribes to a subject, executing the provided callback with received messages.
     pub fn subscribe_async<F>(&self, subject: &str, group: Option<&str>, callback: F) -> Result<AsyncSubscription> where F: Fn(Message) + Send + 'static {
         let sid = self.next_sid.get_and_increment();
-        let (send_sub, recv_sub) = new_async_subscription(sid, subject.to_owned(), group.map(|s| s.to_owned()), callback);
+        let (send_sub, recv_sub) = new_async_subscription(sid, subject.to_owned(), group.map(str::to_owned), callback);
         try!(self.core_conn.lock().unwrap().subscribe(send_sub));
         Ok(recv_sub)
     }
@@ -539,6 +539,7 @@ impl<W: Write> NatsCoreConn<W> {
 
     fn process_err(&mut self, message: &str) -> Result<()> {
         error!("received error from server, closing connection and reconnecting: {}", message);
+        // TODO err type
         Err(Error::ParseError)
     }
 
@@ -569,10 +570,11 @@ impl<W: Write> NatsCoreConn<W> {
             s.delivered += 1;
             let m = Message {
                 subject: args.subject.to_owned(),
-                reply: args.reply.map(|s| s.to_owned()),
+                reply: args.reply.map(str::to_owned),
                 data: data,
             };
 
+            // TODO start a single thread?
             let dispatcher_clone = s.dispatcher.clone();
             thread::spawn(move || {
                 // let _ = dispatcher_clone.lock().unwrap().dispatch_message(m);

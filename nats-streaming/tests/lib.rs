@@ -18,14 +18,14 @@ use nats_streaming_client::{
 #[ignore]
 fn test_connect() {
     let config = Config::default();
-    Connection::new("some-client-id".to_owned(), "test-cluster".to_owned(), config).unwrap();
+    Connection::new("some-client-id-1".to_owned(), "test-cluster".to_owned(), config).unwrap();
 }
 
 #[test]
 #[ignore]
-fn test_pub_sub_channel() {T);
+fn test_pub_sub_channel() {
     let config = Config::default();
-    let mut conn = Connection::new("some-client-id".to_owned(), "test-cluster".to_owned(), config).unwrap();
+    let mut conn = Connection::new("some-client-id-2".to_owned(), "test-cluster".to_owned(), config).unwrap();
 
     let data1 = vec![1, 2, 3];
     let data1_clone = data1.clone();
@@ -51,15 +51,18 @@ fn test_pub_sub_channel() {T);
 #[ignore]
 fn test_pub_sub_callback() {
     let config = Config::default();
-    let mut conn = Connection::new("some-client-id".to_owned(), "test-cluster".to_owned(), config).unwrap();
+    let mut conn = Connection::new("some-client-id-3".to_owned(), "test-cluster".to_owned(), config).unwrap();
 
     let num = Arc::new(Mutex::new(47));
     let num2 = num.clone();
 
+    println!("callback subscribing");
     let sub = conn.subscribe_async("topic2".to_owned(), None, SubscriptionConfig::default(), move |_| {
         *num2.lock().unwrap() = 72;
     }).unwrap();
+    println!("about to publish callback");
     conn.publish("topic2", vec![1, 2, 3]).unwrap();
+    println!("published callback");
 
     thread::sleep(Duration::new(1, 0));
     assert_eq!(72, *num.lock().unwrap());
