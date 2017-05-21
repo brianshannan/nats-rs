@@ -10,6 +10,7 @@ protobuf = "*"
 rand = "0.3.14"
 timer = "*"
 time = "*"
+quick-error = "*"
 
 [dependencies.nats_client]
 path = "../nats"

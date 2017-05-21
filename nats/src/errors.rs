@@ -5,7 +5,7 @@ use std::num;
 use std::sync::mpsc;
 
 use openssl::ssl::error::SslError;
-use rustc_serialize::json;
+use serde_json;
 use url;
 
 use message::Message;
@@ -23,8 +23,7 @@ pub enum Error {
     ChannelSendError(mpsc::SendError<Message>),
     ChannelRecvError(mpsc::RecvError),
     ChannelRecvTimeoutError(mpsc::RecvTimeoutError),
-    JsonEncode(json::EncoderError),
-    JsonDecode(json::DecoderError),
+    Json(serde_json::Error),
     Url(url::ParseError),
     Ssl(SslError),
     Io(io::Error),
@@ -42,8 +41,7 @@ impl fmt::Display for Error {
             Error::ChannelSendError(ref err) => err.fmt(f),
             Error::ChannelRecvError(ref err) => err.fmt(f),
             Error::ChannelRecvTimeoutError(ref err) => err.fmt(f),
-            Error::JsonEncode(ref err) => err.fmt(f),
-            Error::JsonDecode(ref err) => err.fmt(f),
+            Error::Json(ref err) => err.fmt(f),
             Error::Url(ref err) => err.fmt(f),
             Error::Ssl(ref err) => err.fmt(f),
             Error::Io(ref err) => err.fmt(f),
@@ -63,8 +61,7 @@ impl error::Error for Error {
             Error::ChannelSendError(ref err) => err.description(),
             Error::ChannelRecvError(ref err) => err.description(),
             Error::ChannelRecvTimeoutError(ref err) => err.description(),
-            Error::JsonEncode(ref err) => err.description(),
-            Error::JsonDecode(ref err) => err.description(),
+            Error::Json(ref err) => err.description(),
             Error::Url(ref err) => err.description(),
             Error::Ssl(ref err) => err.description(),
             Error::Io(ref err) => err.description(),
@@ -96,15 +93,9 @@ impl From<mpsc::RecvTimeoutError> for Error {
     }
 }
 
-impl From<json::EncoderError> for Error {
-    fn from(err: json::EncoderError) -> Error {
-        Error::JsonEncode(err)
-    }
-}
-
-impl From<json::DecoderError> for Error {
-    fn from(err: json::DecoderError) -> Error {
-        Error::JsonDecode(err)
+impl From<serde_json::Error> for Error {
+    fn from(err: serde_json::Error) -> Error {
+        Error::Json(err)
     }
 }
 

@@ -16,7 +16,7 @@ use openssl::ssl::MaybeSslStream;
 use openssl::ssl::SslStream;
 use rand::Rng;
 use rand::StdRng;
-use rustc_serialize::json;
+use serde_json;
 use url::Url;
 
 use Result;
@@ -30,7 +30,6 @@ use subscription::new_async_subscription;
 use subscription::new_channel_subscription;
 use subscription::AsyncSubscription;
 use subscription::ChannelSubscription;
-// use subscription::DispatchMessage;
 use subscription::Subscription;
 use subscription::SubscriptionID;
 
@@ -95,10 +94,7 @@ pub struct NatsCoreConn<W: Write> {
     closed: bool,
 }
 
-// TODO serde
-// TODO the String fields could be &str, but the
-// serialization macros don't like it
-#[derive(Debug, RustcDecodable, RustcEncodable)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct NatsConnInfo {
     pub verbose: bool,
     pub pedantic: bool,
@@ -111,7 +107,7 @@ pub struct NatsConnInfo {
     pub version: String,
 }
 
-#[derive(Debug, RustcDecodable, RustcEncodable)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct NatsServerInfo {
     pub server_id: String,
     pub host: String,
@@ -344,7 +340,7 @@ impl NatsCoreConn<Stream> {
         if s.len() < 5 || &s[..5] != "INFO " {
             return Err(Error::ParseError)
         }
-        let server_info: NatsServerInfo = try!(json::decode(&s[5..]));
+        let server_info: NatsServerInfo = try!(serde_json::from_str(&s[5..]));
 
         // Check ssl requirements
         match (config.ssl_context.is_some(), server_info.ssl_required) {
@@ -434,7 +430,7 @@ impl<W: Write> NatsCoreConn<W> {
             version: "0.1.0".to_owned(),
         };
 
-        let conn_message = format!("CONNECT {}\r\n", try!(json::encode(&conn_info)));
+        let conn_message = format!("CONNECT {}\r\n", try!(serde_json::to_string(&conn_info)));
         try!(self.writer.write_all(conn_message.as_bytes()));
         try!(self.writer.flush());
 
@@ -596,7 +592,7 @@ mod test {
     use super::*;
     use config::Config;
     use subscription::new_channel_subscription;
-    use rustc_serialize::json;
+    use serde_json;
     use url::Url;
     use std::collections::HashMap;
     use std::str;
@@ -744,7 +740,7 @@ mod test {
         conn.send_connect().unwrap();
         let s = str::from_utf8(&conn.writer).unwrap();
         assert_eq!("CONNECT ", &s[..8]);
-        let conn_info: NatsConnInfo = json::decode(&s[8..]).unwrap();
+        let conn_info: NatsConnInfo = serde_json::from_str(&s[8..]).unwrap();
         assert!(!conn_info.verbose);
         assert!(!conn_info.pedantic);
         assert!(conn_info.user.is_none());
@@ -762,7 +758,7 @@ mod test {
         conn.send_connect().unwrap();
         let s = str::from_utf8(&conn.writer).unwrap();
         assert_eq!("CONNECT ", &s[..8]);
-        let conn_info: NatsConnInfo = json::decode(&s[8..]).unwrap();
+        let conn_info: NatsConnInfo = serde_json::from_str(&s[8..]).unwrap();
         assert_eq!(Some("brian".to_owned()), conn_info.user);
         assert_eq!(Some("my_pass".to_owned()), conn_info.pass);
         assert!(conn_info.auth_token.is_none());
@@ -777,7 +773,7 @@ mod test {
         conn.send_connect().unwrap();
         let s = str::from_utf8(&conn.writer).unwrap();
         assert_eq!("CONNECT ", &s[..8]);
-        let conn_info: NatsConnInfo = json::decode(&s[8..]).unwrap();
+        let conn_info: NatsConnInfo = serde_json::from_str(&s[8..]).unwrap();
         assert!(conn_info.user.is_none());
         assert!(conn_info.pass.is_none());
         assert_eq!(Some("secret_token".to_owned()), conn_info.auth_token);
@@ -792,7 +788,7 @@ mod test {
         conn.send_connect().unwrap();
         let s = str::from_utf8(&conn.writer).unwrap();
         assert_eq!("CONNECT ", &s[..8]);
-        let conn_info: NatsConnInfo = json::decode(&s[8..]).unwrap();
+        let conn_info: NatsConnInfo = serde_json::from_str(&s[8..]).unwrap();
         assert!(conn_info.verbose);
         assert!(conn_info.pedantic);
         assert!(conn_info.ssl_required);

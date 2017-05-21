@@ -5,6 +5,7 @@ extern crate protobuf;
 extern crate rand;
 extern crate time;
 extern crate timer;
+#[macro_use] extern crate quick_error;
 
 mod ack;
 mod config;

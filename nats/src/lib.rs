@@ -1,8 +1,9 @@
-#[macro_use]
-extern crate log;
+#[macro_use] extern crate log;
 extern crate openssl;
+extern crate serde;
+#[macro_use] extern crate serde_derive;
+extern crate serde_json;
 extern crate rand;
-extern crate rustc_serialize;
 extern crate url;
 
 mod config;
