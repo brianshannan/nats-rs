@@ -225,8 +225,7 @@ impl Connection {
         let guid = self.generate_guid();
         let guid_clone = guid.clone();
         let core_conn_clone = self.core_conn.clone();
-        // TODO wait time config
-        let guard = self.timer.schedule_with_delay(TimerDuration::seconds(30), move || {
+        let guard = self.timer.schedule_with_delay(TimerDuration::from_std(self.ack_timeout)?, move || {
             let _ = core_conn_clone.lock().unwrap().ack_timeout_callback(&guid_clone);
         });
 
@@ -248,8 +247,7 @@ impl Connection {
         let guid = self.generate_guid();
         let guid_clone = guid.clone();
         let core_conn_clone = self.core_conn.clone();
-        // TODO wait time config
-        let guard = self.timer.schedule_with_delay(TimerDuration::seconds(30), move || {
+        let guard = self.timer.schedule_with_delay(TimerDuration::from_std(self.ack_timeout)?, move || {
             let _ = core_conn_clone.lock().unwrap().ack_timeout_callback(&guid_clone);
         });
 
@@ -299,7 +297,6 @@ impl Connection {
     }
 
     fn _subscribe<F>(&self, subject: String, group: Option<String>, config: SubscriptionConfig, callback: F) -> Result<String> where F: Fn(MsgProto) + Send + 'static {
-        // TODO
         let core_conn_clone = self.core_conn.clone();
         let mut core_conn = self.core_conn.lock().unwrap();
 
@@ -307,7 +304,7 @@ impl Connection {
 
         core_conn.nats_conn.subscribe_async(&inbox, None, move |message| {
             let e = core_conn_clone.lock().unwrap().process_message(message);
-            // TODO
+            // TODO better error handling
             e.unwrap();
         })?;
 
@@ -354,12 +351,10 @@ impl Connection {
     }
 
     pub fn unsubscribe<S: SubscriptionID>(&self, subscription: &S) -> Result<()> {
-        // TODO
         self.core_conn.lock().unwrap().unsubscribe_or_close(subscription, false)
     }
 
     pub fn close_subscription<S: SubscriptionID>(&self, subscription: &S) -> Result<()> {
-        // TODO
         self.core_conn.lock().unwrap().unsubscribe_or_close(subscription, true)
     }
 }

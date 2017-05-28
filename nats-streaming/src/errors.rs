@@ -5,6 +5,7 @@ use std::sync::mpsc::SendError;
 
 use nats_client::Error as NatsError;
 use protobuf::ProtobufError;
+use time;
 
 use AckResult;
 
@@ -33,6 +34,12 @@ quick_error! {
             from()
             description(err.description())
             display("send error: {}", err)
+            cause(err)
+        }
+        OutOfRangeError(err: time::OutOfRangeError) {
+            from()
+            description(err.description())
+            display("out or range error: {}", err)
             cause(err)
         }
         Timeout {
