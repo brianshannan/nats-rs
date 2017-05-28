@@ -7,6 +7,7 @@ use std::sync::mpsc::channel;
 
 use nats_client::{
     AsyncSubscription,
+    Config as NatsConfig,
     Message,
     NatsConn,
 };
@@ -16,7 +17,8 @@ use rand::{
     Rng,
     StdRng,
 };
-use time::Duration;
+use std::time::Duration;
+use time::Duration as TimerDuration;
 use timer::Timer;
 
 use ack::{
@@ -70,18 +72,24 @@ pub struct Connection {
     heartbeat_subscription: AsyncSubscription,
     timer: Timer,
     ack_subject: String,
+
+    // config values
+    ack_timeout: Duration,
+    max_pub_acks_in_flight: Option<usize>,
+    discover_prefix: String,
+    connect_timeout: Duration,
 }
 
 impl CoreConnection {
-    fn new(client_id: String, cluster_id: String, config: Config) -> Result<(CoreConnection, String)> {
-        let nats_conn = NatsConn::new(config.nats_config)?;
+    fn new(client_id: String, cluster_id: String, config: NatsConfig, discover_prefix: &str) -> Result<(CoreConnection, String)> {
+        let nats_conn = NatsConn::new(config)?;
 
         let heartbeat_inbox = nats_conn.new_inbox();
         let mut connect_request = ConnectRequest::new();
         connect_request.clientID = client_id.clone();
         connect_request.heartbeatInbox = heartbeat_inbox.clone();
         let connect_request_bytes = connect_request.write_to_bytes()?;
-        let connect_topic = format!("{}.{}", &config.discover_prefix, &cluster_id);
+        let connect_topic = format!("{}.{}", &discover_prefix, &cluster_id);
         let connect_response_bytes = nats_conn.request(&connect_topic, &connect_request_bytes, None)?.data;
         let connect_response: ConnectResponse = parse_from_bytes(&connect_response_bytes)?;
 
@@ -172,7 +180,7 @@ impl CoreConnection {
 
 impl Connection {
     pub fn new(client_id: String, cluster_id: String, config: Config) -> Result<Connection> {
-        let (core_conn, heartbeat_inbox) = CoreConnection::new(client_id, cluster_id, config)?;
+        let (core_conn, heartbeat_inbox) = CoreConnection::new(client_id, cluster_id, config.nats_config, &config.discover_prefix)?;
         let core_conn = Arc::new(Mutex::new(core_conn));
         let mut rng = StdRng::new()?;
 
@@ -205,6 +213,10 @@ impl Connection {
             ack_subscription: ack_subscription,
             ack_subject: ack_subject, // TODO put in subscription?
             timer: Timer::new(),
+            ack_timeout: config.ack_timeout,
+            max_pub_acks_in_flight: config.max_pub_acks_in_flight,
+            discover_prefix: config.discover_prefix,
+            connect_timeout: config.connect_timeout,
         })
     }
 
@@ -214,7 +226,7 @@ impl Connection {
         let guid_clone = guid.clone();
         let core_conn_clone = self.core_conn.clone();
         // TODO wait time config
-        let guard = self.timer.schedule_with_delay(Duration::seconds(30), move || {
+        let guard = self.timer.schedule_with_delay(TimerDuration::seconds(30), move || {
             let _ = core_conn_clone.lock().unwrap().ack_timeout_callback(&guid_clone);
         });
 
@@ -237,7 +249,7 @@ impl Connection {
         let guid_clone = guid.clone();
         let core_conn_clone = self.core_conn.clone();
         // TODO wait time config
-        let guard = self.timer.schedule_with_delay(Duration::seconds(30), move || {
+        let guard = self.timer.schedule_with_delay(TimerDuration::seconds(30), move || {
             let _ = core_conn_clone.lock().unwrap().ack_timeout_callback(&guid_clone);
         });
 

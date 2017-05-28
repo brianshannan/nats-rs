@@ -1,3 +1,5 @@
+use std::fmt;
+use std::result;
 use std::sync::mpsc;
 
 use timer::Guard;
@@ -7,8 +9,7 @@ use AckResult;
 
 pub type Acker = Box<DispatchAck + Send>;
 
-pub trait DispatchAck {
-    // TODO type?
+pub trait DispatchAck: fmt::Debug {
     fn dispatch_ack(&self, result: AckResult) -> Result<()>;
 }
 
@@ -38,6 +39,14 @@ pub fn new_channel_ack_pair(timer_guard: Guard) -> (ChannelAckDispatcher, Channe
     (dispatcher, receiver)
 }
 
+impl fmt::Debug for ChannelAckDispatcher {
+    fn fmt(&self, f: &mut fmt::Formatter) -> result::Result<(), fmt::Error> {
+        f.debug_struct("ChannelAckDispatcher")
+            .field("sender", &self.sender)
+            .finish()
+    }
+}
+
 impl DispatchAck for ChannelAckDispatcher {
     fn dispatch_ack(&self, result: AckResult) -> Result<()> {
         Ok(self.sender.send(result)?)
@@ -47,6 +56,14 @@ impl DispatchAck for ChannelAckDispatcher {
 pub struct AsyncAckHandler<F: Fn(AckResult)> {
     pub callback: F,
     pub timer_guard: Guard,
+}
+
+impl<F: Fn(AckResult)> fmt::Debug for AsyncAckHandler<F> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> result::Result<(), fmt::Error> {
+        f.debug_struct("AsyncAckHandler")
+            .field("callback", &"omitted")
+            .finish()
+    }
 }
 
 impl<F: Fn(AckResult)> DispatchAck for AsyncAckHandler<F> {

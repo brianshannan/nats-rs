@@ -14,10 +14,10 @@ mod errors;
 mod streaming_protocol;
 mod subscription;
 
-// pub use ack::{
-//     AsyncAckHandler,
-//     ChannelAckReceiver,
-// };
+pub use ack::{
+    AsyncAckHandler,
+    ChannelAckReceiver,
+};
 pub use config::{
     Config,
     SubscriptionConfig,
